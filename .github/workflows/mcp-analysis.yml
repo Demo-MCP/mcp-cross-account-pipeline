@@ -62,7 +62,7 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
-          const result = JSON.parse(`${{ steps.analysis.outputs.result }}`);
+          const result = ${{ steps.analysis.outputs.result }};
           
           const comment = `## 🤖 MCP Analysis Results
           
@@ -71,9 +71,11 @@ jobs:
           **Tool**: \`${{ steps.parse.outputs.tool }}\`
           
           ### Results
-          ${result.analysis || result.error}
+          \`\`\`json
+          ${JSON.stringify(result, null, 2)}
+          \`\`\`
           
-          *Analysis completed in ${result.duration_ms}ms by MCP Cross-Account Pipeline*`;
+          *Analysis completed by MCP Cross-Account Pipeline*`;
           
           github.rest.issues.createComment({
             issue_number: context.issue.number,

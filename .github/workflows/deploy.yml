@@ -1,0 +1,40 @@
+name: Deploy Infrastructure
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  deploy:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/deploy ')
+    runs-on: [self-hosted, ecs, mcp]
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Extract deploy parameters
+      id: params
+      run: |
+        COMMENT="${{ github.event.comment.body }}"
+        STACK_NAME=$(echo "$COMMENT" | sed -n 's|^/deploy \([^ ]*\).*|\1|p')
+        echo "stack_name=${STACK_NAME:-sample-demo}" >> $GITHUB_OUTPUT
+        
+    - name: Deploy CloudFormation stack
+      run: |
+        aws cloudformation deploy \
+          --template-file sample-stack.yaml \
+          --stack-name ${{ steps.params.outputs.stack_name }} \
+          --parameter-overrides Environment=demo \
+          --region us-east-1 \
+          --no-fail-on-empty-changeset
+          
+    - name: Comment on PR
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        curl -X POST \
+          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+          -d "{\"body\":\"✅ Deployed stack **${{ steps.params.outputs.stack_name }}** in region **us-east-1**\"}"
