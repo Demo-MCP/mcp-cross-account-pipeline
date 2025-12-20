@@ -6,7 +6,7 @@ on:
 
 jobs:
   ask:
-    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/ask ')
+    if: github.event.issue.pull_request && (startsWith(github.event.comment.body, '/ask ') || github.event.comment.body == '/ask')
     runs-on: self-hosted
     
     steps:
