@@ -6,8 +6,8 @@ on:
 
 jobs:
   ask:
-    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/ask')
-    runs-on: ubuntu-latest
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/ask ')
+    runs-on: [self-hosted, ecs, mcp]
     
     steps:
     - name: Checkout

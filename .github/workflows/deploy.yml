@@ -6,8 +6,8 @@ on:
 
 jobs:
   deploy:
-    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/deploy')
-    runs-on: ubuntu-latest
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/deploy ')
+    runs-on: [self-hosted, ecs, mcp]
     
     steps:
     - name: Checkout
