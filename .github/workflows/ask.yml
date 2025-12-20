@@ -22,15 +22,16 @@ jobs:
         
     - name: Install Python dependencies
       run: |
-        pip3 install boto3 requests
+        echo "Dependencies not needed - using HTTP broker service"
         
-    - name: Run broker
+    - name: Call broker service
       id: broker
       run: |
-        echo "Running broker..."
-        python3 broker/broker.py --ask "${{ steps.question.outputs.text }}" || echo "Broker failed with exit code $?"
-        RESULT=$(python3 broker/broker.py --ask "${{ steps.question.outputs.text }}" 2>&1 || echo "ERROR: Broker execution failed")
-        echo "Broker output: $RESULT"
+        RESULT=$(curl -s -X POST \
+          "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
+          -H "Content-Type: application/json" \
+          -d "{\"question\":\"${{ steps.question.outputs.text }}\"}" \
+          | jq -r '.response' 2>/dev/null || echo "Broker service error")
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$RESULT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
