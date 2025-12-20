@@ -1,0 +1,6 @@
+setup.py
+platform_aws_context.egg-info/PKG-INFO
+platform_aws_context.egg-info/SOURCES.txt
+platform_aws_context.egg-info/dependency_links.txt
+platform_aws_context.egg-info/requires.txt
+platform_aws_context.egg-info/top_level.txt
