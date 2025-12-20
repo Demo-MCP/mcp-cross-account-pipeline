@@ -1,0 +1,42 @@
+FROM ubuntu:22.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    jq \
+    git \
+    python3 \
+    python3-pip \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install AWS CLI v2
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+    && unzip awscliv2.zip \
+    && ./aws/install \
+    && rm -rf awscliv2.zip aws/
+
+# Install GitHub Actions runner
+WORKDIR /actions-runner
+RUN curl -o actions-runner-linux-x64-2.311.0.tar.gz -L https://github.com/actions/runner/releases/download/v2.311.0/actions-runner-linux-x64-2.311.0.tar.gz \
+    && tar xzf ./actions-runner-linux-x64-2.311.0.tar.gz \
+    && rm actions-runner-linux-x64-2.311.0.tar.gz
+
+# Copy MCP servers
+COPY platform_aws_context/ /mcp-servers/platform_aws_context/
+COPY ecs-mcp-server/ /mcp-servers/ecs-mcp-server/
+COPY aws-iac-mcp-server/ /mcp-servers/aws-iac-mcp-server/
+WORKDIR /mcp-servers
+RUN pip3 install -e ./platform_aws_context/ \
+    && pip3 install -e ./ecs-mcp-server/ \
+    && pip3 install -e ./aws-iac-mcp-server/
+
+# Copy runner startup script
+COPY start-runner.sh /actions-runner/start-runner.sh
+RUN chmod +x /actions-runner/start-runner.sh
+
+WORKDIR /actions-runner
+CMD ["./start-runner.sh"]

@@ -7,7 +7,7 @@ on:
 jobs:
   analyze:
     if: github.event.issue.pull_request && contains(github.event.comment.body, '/analyze')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ecs, mcp]
     
     steps:
     - name: Parse Command
