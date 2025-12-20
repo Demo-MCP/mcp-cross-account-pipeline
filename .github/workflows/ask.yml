@@ -3,10 +3,12 @@ name: Ask Infrastructure Question
 on:
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
   ask:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '/ask')
+    if: (github.event.issue.pull_request || github.event.pull_request) && contains(github.event.comment.body, '/ask')
     runs-on: self-hosted
     
     steps:
