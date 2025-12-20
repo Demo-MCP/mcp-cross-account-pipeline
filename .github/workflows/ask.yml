@@ -29,16 +29,26 @@ jobs:
     - name: Call broker service
       id: broker
       run: |
+        echo "Question: ${{ steps.question.outputs.text }}"
         echo "Calling broker service..."
-        RESULT=$(curl -s -X POST \
+        
+        # Test health first
+        curl -v "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health"
+        
+        # Call ask endpoint
+        RESULT=$(curl -v -X POST \
           "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
           -H "Content-Type: application/json" \
           -d "{\"question\":\"${{ steps.question.outputs.text }}\"}" \
-          --max-time 30 \
-          | jq -r '.response // "Broker service error"' 2>/dev/null || echo "Failed to call broker service")
-        echo "Broker response: $RESULT"
+          --max-time 30 2>&1)
+        
+        echo "Raw response: $RESULT"
+        
+        # Extract just the response
+        CLEAN_RESULT=$(echo "$RESULT" | jq -r '.response // "No response field"' 2>/dev/null || echo "JSON parse failed")
+        
         echo "result<<EOF" >> $GITHUB_OUTPUT
-        echo "$RESULT" >> $GITHUB_OUTPUT
+        echo "$CLEAN_RESULT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
         
     - name: Log broker result
