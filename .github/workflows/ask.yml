@@ -1,0 +1,54 @@
+name: Ask Infrastructure Question
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  ask:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/ask')
+    runs-on: self-hosted
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Extract question
+      id: question
+      run: |
+        COMMENT="${{ github.event.comment.body }}"
+        QUESTION=$(echo "$COMMENT" | sed 's|^/ask ||')
+        echo "text=$QUESTION" >> $GITHUB_OUTPUT
+        
+    - name: Install Python dependencies
+      run: |
+        pip3 install boto3 requests
+        
+    - name: Run broker
+      id: broker
+      run: |
+        cd broker
+        RESULT=$(python3 broker.py --ask "${{ steps.question.outputs.text }}" 2>&1)
+        echo "result<<EOF" >> $GITHUB_OUTPUT
+        echo "$RESULT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+    - name: Comment on PR
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BODY=$(cat << 'EOF'
+🤖 **MCP Assistant Response:**
+
+${{ steps.broker.outputs.result }}
+
+---
+*Powered by AWS Bedrock + MCP*
+EOF
+        )
+        
+        curl -X POST \
+          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments \
+          -d "{\"body\":$(echo "$BODY" | jq -Rs .)}"

@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     unzip \
+    libicu70 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AWS CLI v2
@@ -38,5 +39,10 @@ RUN pip3 install -e ./platform_aws_context/ \
 COPY start-runner.sh /actions-runner/start-runner.sh
 RUN chmod +x /actions-runner/start-runner.sh
 
+# Create non-root user for runner
+RUN useradd -m -s /bin/bash runner && \
+    chown -R runner:runner /actions-runner /mcp-servers
+
+USER runner
 WORKDIR /actions-runner
 CMD ["./start-runner.sh"]

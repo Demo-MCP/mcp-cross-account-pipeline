@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Sample stack for MCP demo - minimal resources only'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: demo
+    AllowedValues: [demo, test]
+    Description: Environment name
+
+Resources:
+  # Simple S3 bucket with minimal cost
+  DemoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'mcp-demo-${Environment}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteAfter1Day
+            Status: Enabled
+            ExpirationInDays: 1
+
+  # Simple parameter for testing
+  DemoParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/mcp-demo/${Environment}/status'
+      Type: String
+      Value: 'deployed'
+      Description: 'Demo parameter for MCP testing'
+
+Outputs:
+  BucketName:
+    Description: 'Demo bucket name'
+    Value: !Ref DemoBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+      
+  ParameterName:
+    Description: 'Demo parameter name'
+    Value: !Ref DemoParameter
+    Export:
+      Name: !Sub '${AWS::StackName}-ParameterName'
