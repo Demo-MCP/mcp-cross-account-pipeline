@@ -40,14 +40,28 @@ jobs:
         
     - name: Comment on PR
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RESULT: ${{ steps.broker.outputs.result }}
         ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
       run: |
-        # Escape the result for JSON
+        echo "=== BROKER RESULT ==="
+        echo "$RESULT"
+        echo "===================="
+        
+        # Get GitHub App token using the private key in the runner
+        JWT_TOKEN=$(python3 -c "import jwt, time; print(jwt.encode({'iat': int(time.time()), 'exp': int(time.time()) + 600, 'iss': '2509222'}, open('/runner-private-key.pem').read(), algorithm='RS256'))")
+        
+        # Get installation token
+        INSTALL_TOKEN=$(curl -s -X POST \
+          -H "Authorization: Bearer $JWT_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/app/installations/58832893/access_tokens" \
+          | jq -r '.token')
+        
+        # Post comment with proper auth
         ESCAPED_RESULT=$(echo "$RESULT" | jq -Rs .)
         curl -X POST \
-          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Authorization: token $INSTALL_TOKEN" \
           -H "Accept: application/vnd.github.v3+json" \
           "https://api.github.com/repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
-          -d "{\"body\":\"🤖 **MCP Assistant Response:**\\n\\n${ESCAPED_RESULT}\\n\\n---\\n*Powered by AWS Bedrock + MCP*\"}"
+          -d "{\"body\":\"🤖 **MCP Assistant Response:**\\n\\n${ESCAPED_RESULT}\\n\\n---\\n*Powered by AWS Bedrock + MCP*\"}" \
+          || echo "Failed to post comment, but broker result logged above"
