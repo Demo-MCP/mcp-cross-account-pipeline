@@ -4,7 +4,8 @@ This PR tests the MCP cross-account pipeline functionality.
 
 ## Test Commands
 - `/analyze-infrastructure stack=test-stack account=500330120558`
-- `/troubleshoot-ecs service=test-service account=500330120558`
+- `/troubleshoot-ecs service=test-service account=500330120558`1
+- `/ask what ECS services are running?`
 
 ## Expected Results
 The GitHub Actions workflow should:
