@@ -27,6 +27,11 @@ jobs:
     - name: Run broker
       id: broker
       run: |
+        echo "Checking broker file..."
+        ls -la /broker/broker.py
+        echo "Testing python import..."
+        python3 -c "import boto3, requests; print('Dependencies OK')"
+        echo "Running broker..."
         RESULT=$(python3 /broker/broker.py --ask "${{ steps.question.outputs.text }}" 2>&1)
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$RESULT" >> $GITHUB_OUTPUT
