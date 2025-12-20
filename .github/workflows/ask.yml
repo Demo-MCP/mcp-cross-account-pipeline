@@ -27,8 +27,7 @@ jobs:
     - name: Run broker
       id: broker
       run: |
-        cd broker
-        RESULT=$(python3 broker.py --ask "${{ steps.question.outputs.text }}" 2>&1)
+        RESULT=$(python3 broker/broker.py --ask "${{ steps.question.outputs.text }}" 2>&1)
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$RESULT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
