@@ -48,14 +48,14 @@ print(jwt.encode(payload, private_key, algorithm='RS256'))
         
         # Get installation token
         INSTALL_TOKEN=$(curl -s -X POST \
-          -H "Authorization: Bearer \$JWT_TOKEN" \
+          -H "Authorization: Bearer $JWT_TOKEN" \
           -H "Accept: application/vnd.github.v3+json" \
           "https://api.github.com/app/installations/58832893/access_tokens" \
           | jq -r '.token')
         
         # Post comment
         curl -X POST \
-          -H "Authorization: token \$INSTALL_TOKEN" \
+          -H "Authorization: token $INSTALL_TOKEN" \
           -H "Accept: application/vnd.github.v3+json" \
           "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
           -d "{\"body\":\"🤖 **MCP Assistant Response:**\\n\\n${{ steps.broker.outputs.result }}\\n\\n---\\n*Powered by AWS Bedrock + MCP*\"}"
