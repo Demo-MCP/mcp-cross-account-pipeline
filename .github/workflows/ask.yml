@@ -32,23 +32,30 @@ jobs:
         echo "Question: ${{ steps.question.outputs.text }}"
         echo "Calling broker service..."
         
-        # Test health first
-        curl -v "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health"
-        
-        # Call ask endpoint
-        RESULT=$(curl -v -X POST \
+        RESULT=$(curl -s -X POST \
           "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
           -H "Content-Type: application/json" \
-          -d "{\"question\":\"${{ steps.question.outputs.text }}\"}" \
-          --max-time 30 2>&1)
+          -d "{
+            \"ask_text\": \"${{ steps.question.outputs.text }}\",
+            \"account_id\": \"500330120558\",
+            \"region\": \"us-east-1\",
+            \"metadata\": {
+              \"actor\": \"${{ github.actor }}\",
+              \"repo\": \"${{ github.repository }}\",
+              \"pr_number\": ${{ github.event.issue.number || github.event.pull_request.number }},
+              \"run_id\": \"${{ github.run_id }}\"
+            },
+            \"shim_url\": \"http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com\"
+          }" \
+          --max-time 60)
         
-        echo "Raw response: $RESULT"
+        echo "Broker response: $RESULT"
         
-        # Extract just the response
-        CLEAN_RESULT=$(echo "$RESULT" | jq -r '.response // "No response field"' 2>/dev/null || echo "JSON parse failed")
+        # Extract answer from JSON response
+        ANSWER=$(echo "$RESULT" | jq -r '.answer // "No answer field"' 2>/dev/null || echo "JSON parse failed")
         
         echo "result<<EOF" >> $GITHUB_OUTPUT
-        echo "$CLEAN_RESULT" >> $GITHUB_OUTPUT
+        echo "$ANSWER" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
         
     - name: Log broker result
