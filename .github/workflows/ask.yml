@@ -26,6 +26,11 @@ jobs:
       run: |
         echo "Dependencies not needed - using HTTP broker service"
         
+    - name: Test broker connectivity
+      run: |
+        echo "Testing broker health endpoint..."
+        curl -v "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health" --max-time 10
+        
     - name: Call broker service
       id: broker
       run: |
@@ -47,12 +52,20 @@ jobs:
             },
             \"shim_url\": \"http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com\"
           }" \
-          --max-time 60)
+          --max-time 60 \
+          --fail-with-body)
+        
+        CURL_EXIT=$?
+        if [ $CURL_EXIT -ne 0 ]; then
+          echo "Curl failed with exit code: $CURL_EXIT"
+          echo "Response: $RESULT"
+          exit $CURL_EXIT
+        fi
         
         echo "Broker response: $RESULT"
         
         # Extract answer from JSON response
-        ANSWER=$(echo "$RESULT" | jq -r '.answer // "No answer field"' 2>/dev/null || echo "JSON parse failed")
+        ANSWER=$(echo "$RESULT" | jq -r '.answer // "No answer field"' 2>/dev/null || echo "JSON parse failed: $RESULT")
         
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$ANSWER" >> $GITHUB_OUTPUT
