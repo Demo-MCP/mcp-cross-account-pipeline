@@ -1,0 +1,30 @@
+{
+  "family": "github-runner",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::500330120558:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::500330120558:role/McpServerTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "github-runner",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/github-runner:latest",
+      "essential": true,
+      "environment": [
+        {"name": "GITHUB_REPO", "value": "Demo-MCP/mcp-cross-account-pipeline"}
+      ],
+      "secrets": [
+        {"name": "GITHUB_TOKEN", "valueFrom": "arn:aws:secretsmanager:us-east-1:500330120558:secret:github-token-R6UqFg"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/github-runner",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "runner"
+        }
+      }
+    }
+  ]
+}

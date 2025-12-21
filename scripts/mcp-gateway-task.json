@@ -1,0 +1,27 @@
+{
+  "family": "mcp-gateway",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::500330120558:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::500330120558:role/McpServerTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "mcp-gateway",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/mcp-gateway:metadata",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/mcp-gateway",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
