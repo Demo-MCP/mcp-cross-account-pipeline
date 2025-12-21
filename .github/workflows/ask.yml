@@ -26,11 +26,6 @@ jobs:
       run: |
         echo "Dependencies not needed - using HTTP broker service"
         
-    - name: Test broker connectivity
-      run: |
-        echo "Testing broker health endpoint..."
-        curl -v "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health" --max-time 10
-        
     - name: Call broker service
       id: broker
       run: |
