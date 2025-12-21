@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List
 import json
 import requests
 import boto3
@@ -29,184 +29,179 @@ async def ask_question(request: AskRequest):
     start_time = time.time()
     debug = {}
     
-    try:
-        # Get available tools
-        tools = get_tool_definitions()
-        
-        # First Bedrock call
-        bedrock_start = time.time()
-        bedrock_response = call_bedrock_with_tools(request.ask_text, tools)
-        debug["bedrock_first_call_ms"] = int((time.time() - bedrock_start) * 1000)
-        
-        # Check if model wants to use tools
-        if has_tool_calls(bedrock_response):
-            # Execute tool calls
-            shim_start = time.time()
-            tool_results = []
-            
-            for tool_call in extract_tool_calls(bedrock_response):
-                tool_result = execute_tool_call(tool_call, request, debug)
-                tool_results.append(tool_result)
-            
-            debug["shim_call_ms"] = int((time.time() - shim_start) * 1000)
-            
-            # Final Bedrock call with tool results
-            final_start = time.time()
-            final_response = call_bedrock_with_results(request.ask_text, tools, bedrock_response, tool_results)
-            debug["bedrock_final_call_ms"] = int((time.time() - final_start) * 1000)
-            
-            answer = extract_text_from_response(final_response)
-        else:
-            answer = extract_text_from_response(bedrock_response)
-        
-        debug["total_ms"] = int((time.time() - start_time) * 1000)
-        
-        return AskResponse(answer=answer, debug=debug)
-        
-    except Exception as e:
-        debug["error"] = str(e)
-        debug["total_ms"] = int((time.time() - start_time) * 1000)
-        return AskResponse(answer=f"Error: {str(e)}", debug=debug)
-
-def get_tool_definitions():
-    return [
-        {
-            "name": "iac_call_tool",
-            "description": "Call Infrastructure as Code (CloudFormation) tools for stack status and deployments",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string", "description": "Tool name (e.g., describe_stacks, describe_stack_events)"},
-                    "params": {
-                        "type": "object",
-                        "properties": {
-                            "stack_name": {"type": "string", "description": "CloudFormation stack name"}
-                        }
-                    }
-                },
-                "required": ["tool", "params"]
-            }
-        },
-        {
-            "name": "ecs_call_tool",
-            "description": "Call ECS (Elastic Container Service) tools for service and task status",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string", "description": "Tool name (e.g., describe_services, list_tasks)"},
-                    "params": {
-                        "type": "object",
-                        "properties": {
-                            "cluster": {"type": "string", "description": "ECS cluster name"},
-                            "service": {"type": "string", "description": "ECS service name"}
-                        }
-                    }
-                },
-                "required": ["tool", "params"]
-            }
-        }
-    ]
-
-def call_bedrock_with_tools(ask_text: str, tools: list):
-    bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
-    
-    system_prompt = """You are an AWS infrastructure assistant. You can help with:
-- CloudFormation stack status and deployments (use iac_call_tool)
-- ECS service and task status (use ecs_call_tool)
-
-Always provide helpful, accurate information about AWS resources."""
-
-    response = bedrock.invoke_model(
-        modelId='anthropic.claude-3-haiku-20240307-v1:0',
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": ask_text}],
-            "tools": tools
-        })
+    # Initialize conversation history
+    messages = [{"role": "user", "content": [{"text": request.ask_text}]}]
+    system_prompt = (
+        "You are an AWS infrastructure assistant. You help manage ECS and CloudFormation. "
+        "If question doesn't provide account_id and region, always use the provided account_id '500330120558' and region 'us-east-1' for tool calls."
     )
     
-    return json.loads(response['body'].read())
+    try:
+        bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        tools = get_tool_definitions()
+        iteration = 0
+        answer = "I could not determine an answer."
 
-def has_tool_calls(bedrock_response):
-    content = bedrock_response.get('content', [])
-    return any(block.get('type') == 'tool_use' for block in content)
+        # AGENTIC LOOP: Continues until the model provides a final text response
+        while iteration < 10:  # Safety limit to prevent infinite loops
+            iteration += 1
+            call_start = time.time()
+            
+            response = bedrock.converse(
+                modelId='us.amazon.nova-pro-v1:0',
+                messages=messages,
+                system=[{"text": system_prompt}],
+                toolConfig={"tools": tools},
+                inferenceConfig={
+                    "maxTokens": 4096, 
+                    "temperature": 0,  # Vital for structural JSON integrity
+                    "topP": 1
+                },
+                additionalModelRequestFields={
+                    "inferenceConfig": {
+                        "topK": 1
+                    }
+                }
+            )
+            
+            debug[f"bedrock_call_{iteration}_ms"] = int((time.time() - call_start) * 1000)
+            
+            # 1. Add Assistant's response (Thinking + Tool Request) to history
+            output_message = response['output']['message']
+            messages.append(output_message)
+            
+            # 2. Check if the model is finished
+            if response['stopReason'] != 'tool_use':
+                answer = extract_text_from_response(response)
+                break
+                
+            # 3. Handle Tool Calls
+            tool_results_content = []
+            for block in output_message['content']:
+                if 'toolUse' in block:
+                    t_use = block['toolUse']
+                    t_name = t_use['name']
+                    
+                    # Execute tool via Shim
+                    t_start = time.time()
+                    result = execute_tool_logic(t_use, request)
+                    debug[f"tool_{t_name}_iter{iteration}_ms"] = int((time.time() - t_start) * 1000)
+                    
+                    # 4. Format Result using 'json' key (Nova Requirement)
+                    tool_results_content.append({
+                        "toolResult": {
+                            "toolUseId": t_use['toolUseId'],
+                            "content": [{"json": result}],
+                            "status": "success"
+                        }
+                    })
+            
+            # 5. Add Tool Results back to history as a USER role
+            messages.append({"role": "user", "content": tool_results_content})
 
-def extract_tool_calls(bedrock_response):
-    tool_calls = []
-    for block in bedrock_response.get('content', []):
-        if block.get('type') == 'tool_use':
-            tool_calls.append(block)
-    return tool_calls
+        debug["iterations"] = iteration
+        debug["total_ms"] = int((time.time() - start_time) * 1000)
+        return AskResponse(answer=answer, debug=debug)
 
-def execute_tool_call(tool_call, request: AskRequest, debug: dict):
-    tool_name = tool_call['name']
-    tool_input = tool_call['input']
+    except Exception as e:
+        error_msg = f"Error: {str(e)}"
+        print(error_msg)
+        return AskResponse(answer=error_msg, debug={"error": str(e), "total_ms": int((time.time() - start_time) * 1000)})
+
+def execute_tool_logic(tool_use, request: AskRequest):
+    """Passes model-generated inputs to the MCP Shim Service."""
+    t_input = tool_use['input']
+    t_name = tool_use['name']
     
-    # Inject required parameters
-    params = tool_input.get('params', {})
-    params['account_id'] = request.account_id
-    params['region'] = request.region
-    params['_metadata'] = request.metadata
+    # Map tool name to target MCP server type
+    server = 'iac' if 'iac' in t_name else 'ecs'
     
-    # Determine server type
-    server = 'iac' if tool_name == 'iac_call_tool' else 'ecs'
+    # Extract params generated by Nova Pro (includes custom account_id and region)
+    params = t_input.get('params', {})
+    
+    # TODO: Add _metadata support to ECS and IAC MCP servers
+    # if "_metadata" not in params:
+    #     params["_metadata"] = request.metadata
     
     try:
-        response = requests.post(
+        resp = requests.post(
             f"{request.shim_url}/call-tool",
             json={
-                "server": server,
-                "tool": tool_input['tool'],
+                "server": server, 
+                "tool": t_input['tool'], 
                 "params": params
             },
             timeout=30
         )
-        response.raise_for_status()
-        return response.json()
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        debug[f"shim_error_{tool_name}"] = str(e)
-        return {"error": str(e)}
+        return {"error": f"Shim request failed: {str(e)}"}
 
-def call_bedrock_with_results(ask_text: str, tools: list, first_response: dict, tool_results: list):
-    bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
-    
-    # Build conversation with tool results
-    messages = [
-        {"role": "user", "content": ask_text},
-        {"role": "assistant", "content": first_response['content']}
+def get_tool_definitions():
+    """
+    Returns strict JSON schema tool definitions for Nova Pro.
+    Includes custom account_id and region per user requirements.
+    """
+    return [
+        {
+            "toolSpec": {
+                "name": "ecs_call_tool",
+                "description": "Query ECS clusters, services, and tasks in account 500330120558.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string", "description": "Always use 'ecs_resource_management'"},
+                            "params": {
+                                "type": "object",
+                                "properties": {
+                                    "api_operation": {"type": "string", "description": "e.g. ListClusters, ListServices"},
+                                    "api_params": {"type": "object", "description": "Operation params, e.g. {'cluster': 'name'}"},
+                                    "account_id": {"type": "string", "description": "Must be '500330120558'"},
+                                    "region": {"type": "string", "description": "Must be 'us-east-1'"}
+                                },
+                                "required": ["api_operation", "api_params", "account_id", "region"]
+                            }
+                        },
+                        "required": ["tool", "params"]
+                    }
+                }
+            }
+        },
+        {
+            "toolSpec": {
+                "name": "iac_call_tool",
+                "description": "Manage CloudFormation stacks and infrastructure as code.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string", "description": "IAC tool name (e.g. describe_stacks)"},
+                            "params": {
+                                "type": "object",
+                                "properties": {
+                                    "stack_name": {"type": "string"},
+                                    "account_id": {"type": "string", "description": "Must be '500330120558'"},
+                                    "region": {"type": "string", "description": "Must be 'us-east-1'"}
+                                },
+                                "required": ["account_id", "region"]
+                            }
+                        },
+                        "required": ["tool", "params"]
+                    }
+                }
+            }
+        }
     ]
-    
-    # Add tool results
-    for i, result in enumerate(tool_results):
-        tool_call = extract_tool_calls(first_response)[i]
-        messages.append({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": tool_call['id'],
-                "content": json.dumps(result)[:2000]  # Limit size
-            }]
-        })
-    
-    response = bedrock.invoke_model(
-        modelId='anthropic.claude-3-haiku-20240307-v1:0',
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,
-            "messages": messages
-        })
-    )
-    
-    return json.loads(response['body'].read())
 
-def extract_text_from_response(bedrock_response):
-    content = bedrock_response.get('content', [])
+def extract_text_from_response(response):
+    """Safely extracts text content from the Bedrock Converse response."""
+    content = response['output']['message'].get('content', [])
     for block in content:
-        if block.get('type') == 'text':
+        if 'text' in block:
             return block['text']
-    return "No text response from model"
+    return "Task completed successfully."
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
