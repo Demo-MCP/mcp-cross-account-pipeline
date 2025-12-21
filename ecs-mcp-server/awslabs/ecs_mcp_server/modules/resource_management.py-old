@@ -17,7 +17,7 @@ Resource Management module for ECS MCP Server.
 This module provides tools and prompts for managing ECS resources.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -42,13 +42,19 @@ def register_module(mcp: FastMCP) -> None:
         description="AWS account ID for cross-account access (optional)",
     )
 
+    # Add metadata field for tracking request context
+    metadata_field = Field(
+        default={},
+        description="Optional metadata for request tracking (actor, repo, etc.)",
+    )
+
     @mcp.tool(name="ecs_resource_management", annotations=None)
     async def mcp_ecs_resource_management(
         api_operation: str = api_operation_field,
         api_params: Dict[str, Any] = api_params_field,
         account_id: str = account_id_field,
         region: str = Field(default="us-east-1", description="AWS region"),
-        _metadata: Optional[Dict[str, Any]] = None,
+        _metadata: Dict[str, Any] = metadata_field,
     ) -> Dict[str, Any]:
         """
         Execute ECS API operations directly.
@@ -134,13 +140,12 @@ def register_module(mcp: FastMCP) -> None:
             account_context = {
                 "account_id": account_id,
                 "region": region,
-                "_metadata": _metadata or {}
+                "_metadata": _metadata if _metadata else {
+                    "actor": "unknown",
+                    "repo": "unknown"
+                }
             }
-        
-        try:
-            return await ecs_api_operation(api_operation, api_params, account_context)
-        except Exception as e:
-            return {"error": str(e), "operation": api_operation}
+        return await ecs_api_operation(api_operation, api_params, account_context)
 
     # Prompt patterns for resource management
     @mcp.prompt("list ecs resources")

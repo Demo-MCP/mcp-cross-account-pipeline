@@ -13,7 +13,6 @@ class AskRequest(BaseModel):
     shim_url: str = "http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com"
     account_id: str = "500330120558"
     region: str = "us-east-1"
-    metadata: Dict[str, Any] = {}
 
 @app.get("/health")
 async def health_check():
@@ -23,13 +22,13 @@ async def health_check():
 async def ask_question(request: AskRequest):
     try:
         tools = get_available_tools()
-        result = call_bedrock(request.question, tools, request.shim_url, request.account_id, request.region, request.metadata)
+        result = call_bedrock(request.question, tools, request.shim_url)
         return {"response": result}
     except Exception as e:
         print(f"Error in /ask: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, region: str, metadata: Dict[str, Any]) -> str:
+def call_bedrock(ask_text: str, tools: list, shim_url: str) -> str:
     bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
     
     # System prompt is passed separately in Converse API
@@ -79,7 +78,7 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
                     shim_url, 
                     server_type, 
                     tool_input.get('tool', ''), 
-                    {**tool_input.get('params', {}), 'account_id': account_id, 'region': region, '_metadata': metadata}
+                    tool_input.get('params', {})
                 )
                 
                 # Format the result for the next turn
