@@ -197,3 +197,22 @@ curl http://your-alb-url/health
 ## 📄 License
 
 MIT License - see LICENSE file for details
+
+## Metadata Support
+
+### Recent Updates (Tag: with-metadata-support)
+
+**Broker Service**
+- Added `metadata` field to `AskRequest` model
+- Updated `call_bedrock()` to pass `account_id`, `region`, and `metadata` to MCP tools
+- Enhanced tool calls to include metadata context
+
+**ECS MCP Server** 
+- Added `_metadata` parameter to `ecs_resource_management` tool
+- Supports metadata flow through `account_context` for cross-account operations
+- Enables tracking of GitHub actor, repo, PR number, and run ID
+
+**Benefits**
+- End-to-end metadata tracking from GitHub workflows to AWS resources
+- Enhanced auditing and context-aware operations
+- Better troubleshooting with request traceability
