@@ -1,0 +1,27 @@
+{
+  "family": "broker-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::500330120558:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::500330120558:role/McpServerTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "broker",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/broker-service:no-metadata",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/broker-service",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
