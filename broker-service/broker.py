@@ -4,7 +4,7 @@ import requests
 import boto3
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 app = FastAPI(title="MCP Broker Service")
 
@@ -21,116 +21,83 @@ async def health_check():
 @app.post("/ask")
 async def ask_question(request: AskRequest):
     try:
-        # For now, return a simple test response
-        return {"response": f"Test response for question: {request.question}"}
-        
-        # TODO: Re-enable Bedrock integration once basic flow works
-        # tools = get_available_tools()
-        # result = call_bedrock(request.question, tools, request.shim_url)
-        # return {"response": result}
+        tools = get_available_tools()
+        result = call_bedrock(request.question, tools, request.shim_url)
+        return {"response": result}
     except Exception as e:
+        print(f"Error in /ask: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def call_bedrock(ask_text: str, tools: list, shim_url: str) -> str:
-    """Call Bedrock with tool definitions and handle tool calls"""
-    
     bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
     
-    system_prompt = f"""You are an AWS infrastructure assistant. You can help with:
-- CloudFormation stack status and deployments (use iac_call_tool)
-- ECS service and task status (use ecs_call_tool)
-
-Available tools:
-{json.dumps(tools, indent=2)}
-
-Always provide helpful, accurate information about AWS resources."""
-
-    messages = [
-        {
-            "role": "user", 
-            "content": ask_text
-        }
-    ]
+    # System prompt is passed separately in Converse API
+    system_prompts = [{"text": "You are an AWS infrastructure assistant. Help with CloudFormation (iac_call_tool) and ECS (ecs_call_tool)."}]
     
-    # Use Claude 3 Haiku (cheapest)
-    response = bedrock.invoke_model(
-        modelId='anthropic.claude-3-haiku-20240307-v1:0',
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,
-            "system": system_prompt,
-            "messages": messages,
-            "tools": tools
-        })
-    )
+    # Initialize message history
+    messages = [{"role": "user", "content": [{"text": ask_text}]}]
     
-    result = json.loads(response['body'].read())
-    
-    # Handle tool calls
-    if result.get('content') and any(block.get('type') == 'tool_use' for block in result['content']):
-        for block in result['content']:
-            if block.get('type') == 'tool_use':
-                tool_name = block['name']
-                tool_input = block['input']
+    # Logic: Loop until the model provides a final text answer
+    while True:
+        # Use Converse API for Nova Pro
+        response = bedrock.converse(
+            modelId='us.amazon.nova-pro-v1:0',
+            messages=messages,
+            system=system_prompts,
+            toolConfig={"tools": tools},
+            inferenceConfig={
+                "maxTokens": 4096, 
+                "temperature": 0  # Greedy decoding prevents JSON "invalid sequence"
+            }
+        )
+        
+        output_message = response['output']['message']
+        messages.append(output_message)
+        
+        # Stop if the model is done or hit a limit
+        if response['stopReason'] != 'tool_use':
+            # Extract final text answer
+            for block in output_message['content']:
+                if 'text' in block:
+                    return block['text']
+            return "No text response received from model."
+
+        # Handle tool calls
+        tool_results = []
+        for block in output_message['content']:
+            if 'toolUse' in block:
+                tool_use = block['toolUse']
+                tool_name = tool_use['name']
+                tool_input = tool_use['input']
                 
-                # Execute tool call via shim
-                if tool_name == 'iac_call_tool':
-                    tool_result = call_shim_tool(shim_url, 'iac', tool_input['tool'], tool_input['params'])
-                elif tool_name == 'ecs_call_tool':
-                    tool_result = call_shim_tool(shim_url, 'ecs', tool_input['tool'], tool_input['params'])
-                else:
-                    tool_result = {"error": f"Unknown tool: {tool_name}"}
-                
-                # Send tool result back to Bedrock
-                messages.append({
-                    "role": "assistant",
-                    "content": result['content']
-                })
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block['id'],
-                            "content": json.dumps(tool_result)
-                        }
-                    ]
-                })
-                
-                # Get final response
-                final_response = bedrock.invoke_model(
-                    modelId='anthropic.claude-3-haiku-20240307-v1:0',
-                    body=json.dumps({
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 1000,
-                        "system": system_prompt,
-                        "messages": messages
-                    })
+                print(f"Executing tool: {tool_name}")
+
+                # Call your shim/Fargate backend
+                server_type = 'iac' if 'iac' in tool_name else 'ecs'
+                result_data = call_shim_tool(
+                    shim_url, 
+                    server_type, 
+                    tool_input.get('tool', ''), 
+                    tool_input.get('params', {})
                 )
                 
-                final_result = json.loads(final_response['body'].read())
-                return extract_text_content(final_result['content'])
-    
-    return extract_text_content(result['content'])
-
-def extract_text_content(content):
-    """Extract text from Bedrock response content"""
-    if isinstance(content, list):
-        for block in content:
-            if block.get('type') == 'text':
-                return block['text']
-    return str(content)
+                # Format the result for the next turn
+                tool_results.append({
+                    "toolResult": {
+                        "toolUseId": tool_use['toolUseId'],
+                        "content": [{"json": result_data}],
+                        "status": "success"
+                    }
+                })
+        
+        # Add tool results to conversation and loop back
+        messages.append({"role": "user", "content": tool_results})
 
 def call_shim_tool(shim_url: str, server: str, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Call MCP tool via HTTP shim"""
     try:
         response = requests.post(
             f"{shim_url}/call-tool",
-            json={
-                "server": server,
-                "tool": tool,
-                "params": params
-            },
+            json={"server": server, "tool": tool, "params": params},
             timeout=30
         )
         response.raise_for_status()
@@ -139,47 +106,55 @@ def call_shim_tool(shim_url: str, server: str, tool: str, params: Dict[str, Any]
         return {"error": str(e)}
 
 def get_available_tools() -> list:
-    """Get available tools from both MCP servers"""
+    """Corrected toolSpec format for Nova Pro"""
     return [
         {
-            "name": "iac_call_tool",
-            "description": "Call Infrastructure as Code (CloudFormation) tools",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string", "description": "Tool name (e.g., describe_stacks, describe_stack_events)"},
-                    "params": {
+            "toolSpec": {
+                "name": "iac_call_tool",
+                "description": "Call Infrastructure as Code tools",
+                "inputSchema": {
+                    "json": { # Required 'json' wrapper
                         "type": "object",
                         "properties": {
-                            "account_id": {"type": "string"},
-                            "region": {"type": "string"},
-                            "stack_name": {"type": "string", "description": "CloudFormation stack name"}
+                            "tool": {"type": "string"},
+                            "params": {
+                                "type": "object",
+                                "properties": {
+                                    "account_id": {"type": "string"},
+                                    "region": {"type": "string"},
+                                    "stack_name": {"type": "string"}
+                                },
+                                "required": ["account_id", "region"]
+                            }
                         },
-                        "required": ["account_id", "region"]
+                        "required": ["tool", "params"]
                     }
-                },
-                "required": ["tool", "params"]
+                }
             }
         },
         {
-            "name": "ecs_call_tool", 
-            "description": "Call ECS (Elastic Container Service) tools",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string", "description": "Tool name (e.g., describe_services, list_tasks)"},
-                    "params": {
+            "toolSpec": {
+                "name": "ecs_call_tool",
+                "description": "Call ECS tools",
+                "inputSchema": {
+                    "json": {
                         "type": "object",
                         "properties": {
-                            "account_id": {"type": "string"},
-                            "region": {"type": "string"},
-                            "cluster": {"type": "string", "description": "ECS cluster name"},
-                            "service": {"type": "string", "description": "ECS service name"}
+                            "tool": {"type": "string"},
+                            "params": {
+                                "type": "object",
+                                "properties": {
+                                    "account_id": {"type": "string"},
+                                    "region": {"type": "string"},
+                                    "cluster": {"type": "string"},
+                                    "service": {"type": "string"}
+                                },
+                                "required": ["account_id", "region"]
+                            }
                         },
-                        "required": ["account_id", "region"]
+                        "required": ["tool", "params"]
                     }
-                },
-                "required": ["tool", "params"]
+                }
             }
         }
     ]
