@@ -47,7 +47,7 @@ jobs:
             },
             \"shim_url\": \"http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com\"
           }" \
-          --max-time 60 \
+          --max-time 120 \
           --fail-with-body)
         
         CURL_EXIT=$?
