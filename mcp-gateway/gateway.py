@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import subprocess
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -8,7 +9,7 @@ import logging
 
 app = FastAPI(title="MCP Gateway", version="1.0.0")
 
-# Stage 1: Per-server state
+# Per-server state
 locks = {"ecs": asyncio.Lock(), "iac": asyncio.Lock()}
 req_ids = {"ecs": 0, "iac": 0}
 initialized = {"ecs": False, "iac": False}
@@ -23,17 +24,11 @@ class CallToolRequest(BaseModel):
     tool: str
     params: Dict[str, Any]
 
-class DebugRequest(BaseModel):
-    server: str
-    payload: Optional[Dict[str, Any]] = None
-
 def next_id(server: str) -> int:
-    """Get next request ID for server"""
     req_ids[server] += 1
     return req_ids[server]
 
 async def drain_stderr(server_type: str, process):
-    """Continuously drain stderr to CloudWatch logs"""
     try:
         while True:
             line = await process.stderr.readline()
@@ -44,40 +39,44 @@ async def drain_stderr(server_type: str, process):
         print(f"[{server_type} stderr drain error] {e}")
 
 async def start_mcp_server(server_type: str):
-    """Start MCP server subprocess"""
     if processes[server_type] is not None:
-        return processes[server_type]
+        # Check if existing process is still alive
+        if processes[server_type].returncode is None:
+            return processes[server_type]
+    
+    env = os.environ.copy()
+    # Add both package roots to PYTHONPATH to ensure 'import awslabs' works
+    base_path = "/app"
+    env["PYTHONPATH"] = f"{base_path}/ecs-mcp-server:{base_path}/aws-iac-mcp-server:" + env.get("PYTHONPATH", "")
     
     if server_type == "ecs":
-        cmd = ["python", "-m", "awslabs.ecs-mcp-server"]
+        cmd = ["python", "-m", "awslabs.ecs_mcp_server.main"]
     elif server_type == "iac":
-        cmd = ["python", "-m", "awslabs.aws-iac-mcp-server"]
+        # Try using __main__.py entry point instead of server.py
+        cmd = ["python", "-m", "awslabs.aws_iac_mcp_server"] 
     else:
         raise ValueError(f"Unknown server type: {server_type}")
-    
+ 
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
+        env=env
     )
     
     processes[server_type] = process
-    
-    # Start stderr draining
     stderr_tasks[server_type] = asyncio.create_task(drain_stderr(server_type, process))
-    
     print(f"[{server_type}] Started MCP server with PID {process.pid}")
     return process
 
 async def ensure_initialized(server_type: str):
-    """Ensure MCP server is initialized with proper handshake"""
-    if initialized[server_type]:
+    if initialized[server_type] and processes[server_type] and processes[server_type].returncode is None:
         return
     
+    initialized[server_type] = False
     process = await start_mcp_server(server_type)
     
-    # Send initialize request
     init_id = next_id(server_type)
     init_request = {
         "jsonrpc": "2.0",
@@ -90,125 +89,85 @@ async def ensure_initialized(server_type: str):
         }
     }
     
-    print(f"[{server_type}] Sending initialize request: {json.dumps(init_request)}")
     process.stdin.write((json.dumps(init_request) + "\n").encode())
     await process.stdin.drain()
     
-    # Read until we get the initialize response
     while True:
         line = await process.stdout.readline()
-        if not line:
-            raise Exception(f"[{server_type}] Process ended during initialization")
-        
+        if not line: raise Exception(f"[{server_type}] Process ended during init")
         try:
             response = json.loads(line.decode().strip())
-            print(f"[{server_type}] Received: {json.dumps(response)}")
-            
-            if response.get("id") == init_id:
-                print(f"[{server_type}] Initialize response received")
-                break
-        except json.JSONDecodeError:
-            print(f"[{server_type}] Invalid JSON: {line.decode().strip()}")
-            continue
+            if response.get("id") == init_id: break
+        except json.JSONDecodeError: continue
     
-    # Send initialized notification
-    initialized_notification = {
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    }
-    
-    print(f"[{server_type}] Sending initialized notification")
-    process.stdin.write((json.dumps(initialized_notification) + "\n").encode())
+    process.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode())
     await process.stdin.drain()
-    
     initialized[server_type] = True
-    print(f"[{server_type}] Initialization complete")
 
 async def call_mcp_server(server_type: str, mcp_request: dict):
-    """Call MCP server with proper locking and response matching"""
     async with locks[server_type]:
         await ensure_initialized(server_type)
-        
         process = processes[server_type]
         request_id = mcp_request["id"]
         
-        print(f"[{server_type}] Sending request: {json.dumps(mcp_request)}")
-        process.stdin.write((json.dumps(mcp_request) + "\n").encode())
-        await process.stdin.drain()
+        try:
+            process.stdin.write((json.dumps(mcp_request) + "\n").encode())
+            await process.stdin.drain()
+        except RuntimeError:
+            # Catch closed transport here to prevent crash
+            initialized[server_type] = False
+            raise HTTPException(status_code=500, detail="Server transport closed")
         
-        # Read until we get response with matching ID
         while True:
             line = await process.stdout.readline()
-            if not line:
-                raise Exception(f"[{server_type}] Process ended while waiting for response")
-            
+            if not line: raise Exception(f"[{server_type}] Process ended during call")
             try:
                 response = json.loads(line.decode().strip())
-                print(f"[{server_type}] Received: {json.dumps(response)}")
-                
-                if response.get("id") == request_id:
-                    return response
-                else:
-                    # Ignore notifications or other responses
-                    print(f"[{server_type}] Ignoring response with id {response.get('id')}")
-                    continue
-            except json.JSONDecodeError:
-                print(f"[{server_type}] Invalid JSON: {line.decode().strip()}")
-                continue
+                if response.get("id") == request_id: return response
+            except json.JSONDecodeError: continue
 
 @app.get("/health")
 async def health_check():
     return {"ok": True}
 
-@app.post("/list-tools")
-async def list_tools(request: ListToolsRequest):
-    mcp_request = {
-        "jsonrpc": "2.0",
-        "id": next_id(request.server),
-        "method": "tools/list",
-        "params": None
-    }
-    return await call_mcp_server(request.server, mcp_request)
-
 @app.post("/call-tool")
 async def call_tool(request: CallToolRequest):
-    mcp_request = {
-        "jsonrpc": "2.0",
-        "id": next_id(request.server),
-        "method": "tools/call",
-        "params": {
-            "name": request.tool,
-            "arguments": request.params
+    # Handle wrapper tools (ecs_call_tool, iac_call_tool)
+    if request.tool in ["ecs_call_tool", "iac_call_tool"]:
+        # Extract actual tool name from params
+        actual_tool = request.params.get("tool")
+        if not actual_tool:
+            raise HTTPException(status_code=400, detail="Missing 'tool' parameter in wrapper call")
+        
+        # Flatten nested params structure - if params.params exists, use it directly
+        if "params" in request.params:
+            tool_params = request.params["params"]
+        else:
+            tool_params = request.params.copy()
+            tool_params.pop("tool", None)  # Remove the tool name from params
+        
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": next_id(request.server),
+            "method": "tools/call",
+            "params": {
+                "name": actual_tool,
+                "arguments": tool_params
+            }
         }
-    }
-    return await call_mcp_server(request.server, mcp_request)
-
-# Debug endpoints for Stage 1
-@app.post("/debug/start")
-async def debug_start(request: DebugRequest):
-    process = await start_mcp_server(request.server)
-    return {
-        "server": request.server,
-        "pid": process.pid,
-        "initialized": initialized[request.server]
-    }
-
-@app.post("/debug/initialize")
-async def debug_initialize(request: DebugRequest):
-    await ensure_initialized(request.server)
-    return {
-        "server": request.server,
-        "initialized": initialized[request.server]
-    }
-
-@app.post("/debug/raw")
-async def debug_raw(request: DebugRequest):
-    if not request.payload:
-        raise HTTPException(status_code=400, detail="payload required")
+    else:
+        # Standard MCP tool call structure
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": next_id(request.server),
+            "method": "tools/call",
+            "params": {
+                "name": request.tool,
+                "arguments": request.params
+            }
+        }
     
-    request.payload["id"] = next_id(request.server)
-    return await call_mcp_server(request.server, request.payload)
+    return await call_mcp_server(request.server, mcp_request)
 
 if __name__ == "__main__":
     import uvicorn

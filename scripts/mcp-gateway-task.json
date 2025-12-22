@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "mcp-gateway",
-      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/mcp-gateway:pythonpath-fix",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/mcp-gateway:main-fix",
       "essential": true,
       "portMappings": [
         {"containerPort": 8080, "protocol": "tcp"}
