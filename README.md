@@ -5,14 +5,14 @@ End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MC
 ## 🏗️ Architecture
 
 ```
-GitHub PR Comment → GitHub Actions → ECS Fargate → MCP Servers → AssumeRole → AWS APIs → Nova Pro Analysis
+GitHub PR Comment → GitHub Actions → Broker Service → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
 ```
 
 ## ✨ Features
 
 * **Nova Pro Integration**: Advanced AI tool calling with agentic loops
 * **Cross-Account Support**: Dynamic role assumption per API call
-* **MCP Protocol**: Standardized AI tool integration
+* **MCP Protocol**: Standardized AI tool integration with gateway routing
 * **ECS Fargate**: Serverless container execution
 * **GitHub Integration**: PR comment triggers and responses
 * **Multi-Service**: ECS and Infrastructure-as-Code analysis
@@ -21,75 +21,124 @@ GitHub PR Comment → GitHub Actions → ECS Fargate → MCP Servers → AssumeR
 
 ### Prerequisites
 - AWS CLI configured with admin permissions
-- Docker installed
+- Docker installed and logged into ECR
 - GitHub repository with Actions enabled
 
-### 1. Setup IAM Roles
-```bash
-# Create cross-account IAM roles
-./scripts/setup-iam-roles.sh
+### 1. Configure Infrastructure Parameters
+
+Update the following files with your AWS account details:
+
+**scripts/mcp-gateway-task.json**
+```json
+{
+  "family": "mcp-gateway",
+  "taskRoleArn": "arn:aws:iam::YOUR-ACCOUNT-ID:role/McpServerTaskRole",
+  "executionRoleArn": "arn:aws:iam::YOUR-ACCOUNT-ID:role/ecsTaskExecutionRole"
+}
 ```
 
-### 2. Build and Push Images
-```bash
-# Build broker service
-cd broker-service
-docker build -t broker-service .
-docker tag broker-service:latest <account-id>.dkr.ecr.us-east-1.amazonaws.com/broker-service:latest
-docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/broker-service:latest
+**scripts/broker-task.json**
+```json
+{
+  "family": "broker-service", 
+  "taskRoleArn": "arn:aws:iam::YOUR-ACCOUNT-ID:role/McpServerTaskRole",
+  "executionRoleArn": "arn:aws:iam::YOUR-ACCOUNT-ID:role/ecsTaskExecutionRole"
+}
+```
 
-# Build MCP servers
-cd ../ecs-mcp-server
-docker build -t ecs-mcp-server .
-docker tag ecs-mcp-server:latest <account-id>.dkr.ecr.us-east-1.amazonaws.com/ecs-mcp-server:latest
-docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/ecs-mcp-server:latest
+**Update subnets and security groups in deployment scripts:**
+- Subnets: `subnet-0d1a30fbc37023fea`, `subnet-0b296ab71b4c7e39d`
+- Security Group: `sg-0190ab5630f4e7309`
+
+### 2. Build and Push Images
+
+```bash
+# Login to ECR
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push broker service
+cd broker-service
+docker build -t YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/broker-service:latest .
+docker push YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/broker-service:latest
+
+# Build and push MCP gateway
+cd ../mcp-gateway
+docker build -f Dockerfile -t YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/mcp-gateway:latest .
+docker push YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/mcp-gateway:latest
+
+# Build and push GitHub runner (for testing)
+cd ../github-runner
+docker build -t YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/github-runner:latest .
+docker push YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/github-runner:latest
 ```
 
 ### 3. Deploy Infrastructure
+
 ```bash
-# Deploy ECS cluster and ALB
-aws cloudformation deploy \
-  --template-file ecs-mcp-server/awslabs/ecs_mcp_server/templates/ecs_infrastructure.json \
-  --stack-name mcp-infrastructure \
-  --capabilities CAPABILITY_IAM
+# Create ECS cluster
+aws ecs create-cluster --cluster-name mcp-cluster
 
 # Register task definitions
-aws ecs register-task-definition --cli-input-json file://broker-task.json
+aws ecs register-task-definition --cli-input-json file://scripts/broker-task.json
+aws ecs register-task-definition --cli-input-json file://scripts/mcp-gateway-task.json
 
-# Deploy services
-./scripts/deploy-ecs-service.sh
+# Create ALB and target groups (update with your VPC/subnet IDs)
+aws elbv2 create-load-balancer --name broker-internal-alb --subnets subnet-YOUR-ID subnet-YOUR-ID --security-groups sg-YOUR-ID --scheme internal
+aws elbv2 create-load-balancer --name mcp-internal-alb --subnets subnet-YOUR-ID subnet-YOUR-ID --security-groups sg-YOUR-ID --scheme internal
+
+# Create ECS services
+aws ecs create-service --cluster mcp-cluster --service-name broker-service --task-definition broker-service:1 --desired-count 1 --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[subnet-YOUR-ID,subnet-YOUR-ID],securityGroups=[sg-YOUR-ID],assignPublicIp=ENABLED}" --load-balancers targetGroupArn=arn:aws:elasticloadbalancing:us-east-1:YOUR-ACCOUNT-ID:targetgroup/broker-targets/YOUR-ID,containerName=broker-service,containerPort=8080
+
+aws ecs create-service --cluster mcp-cluster --service-name mcp-gateway --task-definition mcp-gateway:1 --desired-count 1 --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[subnet-YOUR-ID,subnet-YOUR-ID],securityGroups=[sg-YOUR-ID],assignPublicIp=ENABLED}" --load-balancers targetGroupArn=arn:aws:elasticloadbalancing:us-east-1:YOUR-ACCOUNT-ID:targetgroup/mcp-gateway-targets/YOUR-ID,containerName=mcp-gateway,containerPort=8080
 ```
 
 ### 4. Configure GitHub Actions
-```bash
-# Set repository secrets:
-# - AWS_ACCESS_KEY_ID
-# - AWS_SECRET_ACCESS_KEY  
-# - AWS_REGION (us-east-1)
-# - GITHUB_TOKEN
+
+Set repository secrets:
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`  
+- `AWS_REGION` (us-east-1)
+- `GITHUB_TOKEN`
+
+Update `.github/workflows/ask.yml` with your ALB URL:
+```yaml
+env:
+  BROKER_URL: "http://internal-broker-internal-alb-YOUR-ID.us-east-1.elb.amazonaws.com"
 ```
 
 ### 5. Test End-to-End
-```bash
-# Test the pipeline
-./scripts/test-pipeline.sh
 
-# Or comment on any PR:
-# /analyze-infrastructure
-# /troubleshoot-ecs
+```bash
+# Test ECS MCP server
+curl -X POST http://YOUR-GATEWAY-ALB-URL/call-tool \
+  -H "Content-Type: application/json" \
+  -d '{"server": "ecs", "tool": "ecs_call_tool", "params": {"tool": "ecs_resource_management", "params": {"api_operation": "ListClusters", "api_params": {}, "account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1"}}}'
+
+# Test IAC MCP server  
+curl -X POST http://YOUR-GATEWAY-ALB-URL/call-tool \
+  -H "Content-Type: application/json" \
+  -d '{"server": "iac", "tool": "iac_call_tool", "params": {"tool": "troubleshoot_cloudformation_deployment", "params": {"account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1", "stack_name": "sample-demo"}}}'
+
+# Test broker service
+curl -X POST http://YOUR-BROKER-ALB-URL/ask \
+  -H "Content-Type: application/json" \
+  -d '{"ask_text": "List all ECS clusters in my account", "shim_url": "http://YOUR-GATEWAY-ALB-URL", "account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1", "metadata": {"source": "test"}}'
 ```
 
 ## 📁 Repository Structure
 
 ```
 ├── broker-service/           # Nova Pro broker service
-│   ├── app.py               # FastAPI broker with Nova Pro integration
+│   ├── broker.py            # FastAPI broker with Nova Pro integration
 │   ├── Dockerfile           # Container configuration
-│   └── broker-task.json     # ECS task definition
-├── ecs-mcp-server/          # ECS MCP server
-├── aws-iac-mcp-server/      # Infrastructure MCP server
+│   └── requirements.txt     # Python dependencies
 ├── mcp-gateway/             # MCP protocol gateway
-├── scripts/                 # Deployment scripts
+│   ├── gateway.py           # FastAPI gateway routing MCP servers
+│   └── Dockerfile           # Container configuration
+├── ecs-mcp-server/          # ECS MCP server (embedded)
+├── aws-iac-mcp-server/      # Infrastructure MCP server (embedded)
+├── platform_aws_context/   # AWS context utilities
+├── scripts/                 # Deployment task definitions
 ├── .github/workflows/       # GitHub Actions
 └── sample-stack.yaml        # Demo CloudFormation template
 ```
@@ -98,17 +147,22 @@ aws ecs register-task-definition --cli-input-json file://broker-task.json
 
 ### Broker Service
 - **Nova Pro Integration**: Uses `bedrock.converse()` API with agentic loops
-- **Tool Calling**: Supports ECS and IAC MCP servers
-- **Performance**: ~10.6s response time, 2-iteration completion
+- **Tool Calling**: Routes to ECS and IAC MCP servers via gateway
+- **Performance**: ~4-5s response time with proper routing
 
-### MCP Servers
+### MCP Gateway
+- **Server Routing**: Routes requests to appropriate MCP servers (ECS/IAC)
+- **Process Management**: Manages MCP server processes and communication
+- **Protocol Translation**: Converts HTTP requests to MCP protocol
+
+### MCP Servers (Embedded)
 - **ECS Server**: List clusters, services, tasks, troubleshoot deployments
-- **IAC Server**: Analyze CloudFormation, CDK, Terraform templates
-- **Cross-Account**: Dynamic role assumption per request
+- **IAC Server**: Analyze CloudFormation stacks, troubleshoot deployments
+- **Module Resolution**: Fixed PYTHONPATH issues for proper imports
 
 ### Infrastructure
 - **ECS Fargate**: Serverless container execution
-- **Application Load Balancer**: Health checks and routing
+- **Application Load Balancer**: Health checks and routing (2 ALBs: broker + gateway)
 - **ECR**: Container image registry
 - **CloudWatch**: Logging and monitoring
 
@@ -117,102 +171,121 @@ aws ecs register-task-definition --cli-input-json file://broker-task.json
 ### PR Comments
 ```bash
 # Analyze infrastructure
-/analyze-infrastructure
+/ask List all ECS clusters and their status
 
-# Troubleshoot ECS issues  
-/troubleshoot-ecs cluster-name
-
-# Cross-account analysis
-/cross-account 123456789012 analyze-infrastructure
+# Troubleshoot CloudFormation
+/ask Check the CloudFormation stack sample-demo for any issues
 ```
 
 ### Direct API Calls
 ```bash
-curl -X POST http://your-alb-url/ask \
+# Via Broker (recommended)
+curl -X POST http://your-broker-alb-url/ask \
   -H "Content-Type: application/json" \
   -d '{
     "ask_text": "List ECS tasks in cluster mcp-cluster",
-    "account_id": "500330120558", 
-    "region": "us-east-1"
+    "shim_url": "http://your-gateway-alb-url",
+    "account_id": "YOUR-ACCOUNT-ID", 
+    "region": "us-east-1",
+    "metadata": {"source": "api"}
+  }'
+
+# Direct Gateway Call
+curl -X POST http://your-gateway-alb-url/call-tool \
+  -H "Content-Type: application/json" \
+  -d '{
+    "server": "ecs",
+    "tool": "ecs_call_tool", 
+    "params": {
+      "tool": "ecs_resource_management",
+      "params": {
+        "api_operation": "ListClusters",
+        "api_params": {},
+        "account_id": "YOUR-ACCOUNT-ID",
+        "region": "us-east-1"
+      }
+    }
   }'
 ```
 
-## 🔒 Security
+## 🔧 Configuration Requirements
 
-- **IAM Roles**: Least privilege access with cross-account trust
-- **VPC**: Private subnets with NAT gateway
-- **ALB**: HTTPS termination and security groups
-- **Secrets**: GitHub Actions secrets for credentials
+### Required AWS Resources
+- **ECS Cluster**: `mcp-cluster`
+- **VPC**: With public/private subnets
+- **Security Groups**: Allow HTTP traffic between services
+- **IAM Roles**: 
+  - `ecsTaskExecutionRole` (ECS task execution)
+  - `McpServerTaskRole` (AWS API access)
+- **ECR Repositories**: 
+  - `broker-service`
+  - `mcp-gateway`
+  - `github-runner`
 
-## 💰 Cost Optimization
-
-- **Fargate**: Pay-per-use, no idle costs
-- **Spot Instances**: Optional for development
-- **Auto Scaling**: Scale to zero when not in use
-- **Estimated Cost**: ~$30/month continuous, ~$0.04/hour on-demand
+### Environment Variables
+- **Broker Service**: No special env vars required
+- **MCP Gateway**: Uses embedded MCP servers with fixed PYTHONPATH
+- **GitHub Actions**: Uses repository secrets for AWS credentials
 
 ## 🚨 Troubleshooting
 
 ### Common Issues
-1. **Tool Calling Errors**: Check schema alignment between broker and MCP servers
-2. **Health Check Failures**: Verify ALB target group configuration
-3. **Cross-Account Access**: Ensure IAM roles have proper trust relationships
-4. **Nova Pro Errors**: Check inference parameters and token limits
+
+1. **Module Import Errors (Fixed)**
+   - **Issue**: `ModuleNotFoundError: No module named 'awslabs.aws_iac_mcp_server'`
+   - **Solution**: Gateway now uses explicit PYTHONPATH for IAC server: `env PYTHONPATH=/app/aws-iac-mcp-server:/app python /app/aws-iac-mcp-server/awslabs/aws_iac_mcp_server/server.py`
+
+2. **Gateway Health Check Failures**
+   - Check ALB target group health
+   - Verify security group allows traffic on port 8080
+   - Check ECS service status
+
+3. **Broker Timeout Issues**
+   - Increased timeout to 2 minutes for complex operations
+   - Check gateway ALB connectivity from broker
 
 ### Debug Commands
 ```bash
 # Check ECS service status
-aws ecs describe-services --cluster mcp-cluster --services broker-service
+aws ecs describe-services --cluster mcp-cluster --services broker-service mcp-gateway
 
 # View logs
-aws logs get-log-events --log-group-name /ecs/broker-service
+aws logs get-log-events --log-group-name /ecs/broker-service --log-stream-name LATEST
+aws logs get-log-events --log-group-name /ecs/mcp-gateway --log-stream-name LATEST
 
 # Test ALB health
-curl http://your-alb-url/health
+curl http://your-broker-alb-url/health
+curl http://your-gateway-alb-url/health
+
+# Test MCP servers directly
+aws ecs run-task --cluster mcp-cluster --task-definition github-runner:3 --launch-type FARGATE --network-configuration "awsvpcConfiguration={assignPublicIp=ENABLED,securityGroups=[sg-YOUR-ID],subnets=[subnet-YOUR-ID]}" --overrides '{"containerOverrides":[{"name":"github-runner","command":["curl","-X","POST","http://YOUR-GATEWAY-ALB/call-tool","-H","Content-Type: application/json","-d","{\"server\":\"ecs\",\"tool\":\"ecs_call_tool\",\"params\":{\"tool\":\"ecs_resource_management\",\"params\":{\"api_operation\":\"ListClusters\",\"api_params\":{},\"account_id\":\"YOUR-ACCOUNT-ID\",\"region\":\"us-east-1\"}}}"]}]}'
 ```
 
 ## 🔄 Development Workflow
 
-1. **Local Testing**: Use `docker-compose` for local development
-2. **PR Creation**: Triggers GitHub Actions pipeline
-3. **Deployment**: Automatic ECS service updates
-4. **Monitoring**: CloudWatch logs and metrics
-5. **Rollback**: ECS service revision management
+1. **Local Testing**: Test MCP servers individually before deployment
+2. **Build Images**: Build and push to ECR
+3. **Deploy Services**: Update ECS services with new task definitions
+4. **Test Integration**: Verify broker → gateway → MCP server flow
+5. **GitHub Integration**: Test via PR comments
 
 ## 📈 Monitoring
 
-- **CloudWatch Logs**: Application and container logs
-- **ECS Metrics**: CPU, memory, task health
-- **ALB Metrics**: Request count, latency, errors
-- **Custom Metrics**: Tool calling performance, Nova Pro usage
+- **CloudWatch Logs**: 
+  - `/ecs/broker-service` - Broker service logs with detailed tool calling
+  - `/ecs/mcp-gateway` - Gateway routing and MCP server management
+  - `/ecs/github-runner` - Test execution logs
+- **ECS Metrics**: CPU, memory, task health for both services
+- **ALB Metrics**: Request count, latency, errors for both ALBs
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create feature branch
-3. Test with `./scripts/test-pipeline.sh`
+2. Update configuration files with your AWS account details
+3. Test locally using the debug commands above
 4. Submit pull request
-5. Comment `/test` to trigger validation
+5. Comment `/ask test the system` to trigger validation
 
 ## 📄 License
 
 MIT License - see LICENSE file for details
-
-## Metadata Support
-
-### Recent Updates (Tag: with-metadata-support)
-
-**Broker Service**
-- Added `metadata` field to `AskRequest` model
-- Updated `call_bedrock()` to pass `account_id`, `region`, and `metadata` to MCP tools
-- Enhanced tool calls to include metadata context
-
-**ECS MCP Server** 
-- Added `_metadata` parameter to `ecs_resource_management` tool
-- Supports metadata flow through `account_context` for cross-account operations
-- Enables tracking of GitHub actor, repo, PR number, and run ID
-
-**Benefits**
-- End-to-end metadata tracking from GitHub workflows to AWS resources
-- Enhanced auditing and context-aware operations
-- Better troubleshooting with request traceability
