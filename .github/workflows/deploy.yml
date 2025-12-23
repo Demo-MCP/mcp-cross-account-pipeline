@@ -6,7 +6,7 @@ on:
 
 jobs:
   deploy:
-    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/deploy ')
+    if: (github.event.issue.pull_request || github.event.pull_request) && startsWith(github.event.comment.body, '/deploy')
     runs-on: self-hosted
     
     steps:

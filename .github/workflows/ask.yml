@@ -8,7 +8,7 @@ on:
 
 jobs:
   ask:
-    if: (github.event.issue.pull_request || github.event.pull_request) && contains(github.event.comment.body, '/ask')
+    if: (github.event.issue.pull_request || github.event.pull_request) && startsWith(github.event.comment.body, '/ask')
     runs-on: self-hosted
     
     steps:
