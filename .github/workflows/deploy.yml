@@ -13,9 +13,10 @@ jobs:
     - name: Job Start Metrics
       if: always()
       run: |
-        curl -X POST "https://rfxerphsxr44xq6ltyk7y6gaki0vudaw.lambda-url.us-east-1.on.aws/job/start" \
-          -H "Content-Type: application/json" \
-          -d "{
+        aws lambda invoke \
+          --function-name mcp-metrics-writer \
+          --payload "{
+            \"action\": \"job_start\",
             \"run_id\": \"${{ github.run_id }}\",
             \"repository\": \"${{ github.repository }}\",
             \"organization\": \"${{ github.repository_owner }}\",
@@ -25,7 +26,9 @@ jobs:
             \"runner_name\": \"${{ runner.name }}\",
             \"job_start_time\": \"$(date -Iseconds)\",
             \"job_status\": \"RUNNING\"
-          }"
+          }" \
+          --region us-east-1 \
+          /tmp/start_response.json
     
     - name: Checkout
       uses: actions/checkout@v4
@@ -64,12 +67,15 @@ jobs:
           JOB_STATUS="FAILED"
         fi
         
-        curl -X POST "https://rfxerphsxr44xq6ltyk7y6gaki0vudaw.lambda-url.us-east-1.on.aws/job/end" \
-          -H "Content-Type: application/json" \
-          -d "{
+        aws lambda invoke \
+          --function-name mcp-metrics-writer \
+          --payload "{
+            \"action\": \"job_end\",
             \"run_id\": \"${{ github.run_id }}\",
             \"job_end_time\": \"$(date -Iseconds)\",
             \"job_status\": \"$JOB_STATUS\",
             \"job_error_message\": \"${{ job.status == 'failure' && 'Deployment failed' || '' }}\",
             \"job_failure_category\": \"${{ job.status == 'failure' && 'deployment' || '' }}\"
-          }"
+          }" \
+          --region us-east-1 \
+          /tmp/end_response.json
