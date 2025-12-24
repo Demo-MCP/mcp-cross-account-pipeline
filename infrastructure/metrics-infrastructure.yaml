@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'MCP Workflow Metrics - RDS Postgres + Lambda Writer'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where RDS and Lambda will be deployed
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnet IDs for RDS and Lambda
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Database password for metrics user
+    MinLength: 8
+
+Resources:
+  # Security Group for Lambda
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for metrics writer Lambda
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound
+
+  # Security Group for RDS
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for MCP metrics RDS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: Allow Lambda access to Postgres
+
+  # RDS Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for MCP metrics RDS
+      SubnetIds: !Ref PrivateSubnetIds
+
+  # RDS Postgres Instance (Free Tier)
+  MetricsDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: mcp-metrics-db
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '15.7'
+      AllocatedStorage: 20
+      StorageType: gp2
+      DBName: mcp_metrics
+      MasterUsername: metrics_user
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+      PubliclyAccessible: false
+
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RDSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                Resource: '*'
+
+  # Lambda Function
+  MetricsWriterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mcp-metrics-writer
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps('Placeholder - deploy actual code')}
+      Environment:
+        Variables:
+          DB_HOST: !GetAtt MetricsDatabase.Endpoint.Address
+          DB_PORT: !GetAtt MetricsDatabase.Endpoint.Port
+          DB_NAME: mcp_metrics
+          DB_USER: metrics_user
+          DB_PASSWORD: !Ref DBPassword
+      Role: !GetAtt LambdaExecutionRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds: !Ref PrivateSubnetIds
+      Timeout: 30
+
+  # Lambda Function URL (Internal)
+  MetricsWriterFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref MetricsWriterFunction
+      AuthType: NONE
+      Cors:
+        AllowMethods:
+          - POST
+        AllowOrigins:
+          - "*"
+
+  # Permission for Function URL
+  MetricsWriterFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MetricsWriterFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  DatabaseEndpoint:
+    Description: RDS Postgres endpoint
+    Value: !GetAtt MetricsDatabase.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseEndpoint"
+  
+  LambdaFunctionUrl:
+    Description: Lambda Function URL for metrics writer
+    Value: !GetAtt MetricsWriterFunctionUrl.FunctionUrl
+    Export:
+      Name: !Sub "${AWS::StackName}-MetricsWriterUrl"
+  
+  DatabaseName:
+    Description: Database name
+    Value: mcp_metrics
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseName"
