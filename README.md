@@ -10,12 +10,25 @@ GitHub PR Comment → GitHub Actions → Broker Service → MCP Gateway → MCP 
 
 ## ✨ Features
 
-* **Nova Pro Integration**: Advanced AI tool calling with agentic loops
-* **Cross-Account Support**: Dynamic role assumption per API call
-* **MCP Protocol**: Standardized AI tool integration with gateway routing
-* **ECS Fargate**: Serverless container execution
-* **GitHub Integration**: PR comment triggers and responses
-* **Multi-Service**: ECS and Infrastructure-as-Code analysis
+* **🔄 Unified MCP Broker**: Single entry point for all deployment tools with intelligent routing
+* **📊 Deployment Metrics Integration**: Real-time GitHub Actions deployment tracking and analysis
+* **🤖 Nova Pro Integration**: Advanced AI tool calling with agentic loops
+* **🔀 Cross-Account Support**: Dynamic role assumption per API call
+* **🌐 MCP Protocol**: Standardized AI tool integration with gateway routing
+* **☁️ ECS Fargate**: Serverless container execution
+* **🔗 GitHub Integration**: PR comment triggers and responses
+* **🏗️ Multi-Service**: ECS, Infrastructure-as-Code, and deployment analysis
+
+### 🆕 New: Unified MCP Broker Integration
+
+The broker service now provides a single, intelligent entry point for all deployment tools:
+
+- **Dynamic Tool Discovery**: Automatically discovers deployment metrics tools from MCP server
+- **Intelligent Routing**: Routes `deploy_*` tools to metrics server, others to gateway
+- **Metadata Integration**: Uses GitHub Actions metadata for repository and run_id when available
+- **Auto Run Selection**: Automatically selects RUNNING deployments when no run_id provided
+- **Text Response Handling**: Properly formats text responses for Bedrock compatibility
+- **Repository Validation**: Validates repository format and prefers metadata over AI guesses
 
 ## 🚀 Quick Deploy from Scratch
 
@@ -119,7 +132,12 @@ curl -X POST http://YOUR-GATEWAY-ALB-URL/call-tool \
   -H "Content-Type: application/json" \
   -d '{"server": "iac", "tool": "iac_call_tool", "params": {"tool": "troubleshoot_cloudformation_deployment", "params": {"account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1", "stack_name": "sample-demo"}}}'
 
-# Test broker service
+# Test unified broker with deployment metrics
+curl -X POST http://YOUR-BROKER-ALB-URL/ask \
+  -H "Content-Type: application/json" \
+  -d '{"ask_text": "Get deployment summary for the latest run", "account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1", "metadata": {"repository": "Demo-MCP/mcp-cross-account-pipeline", "run_id": "20490462868"}}'
+
+# Test broker service with ECS tools
 curl -X POST http://YOUR-BROKER-ALB-URL/ask \
   -H "Content-Type: application/json" \
   -d '{"ask_text": "List all ECS clusters in my account", "shim_url": "http://YOUR-GATEWAY-ALB-URL", "account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1", "metadata": {"source": "test"}}'
@@ -128,8 +146,8 @@ curl -X POST http://YOUR-BROKER-ALB-URL/ask \
 ## 📁 Repository Structure
 
 ```
-├── broker-service/           # Nova Pro broker service
-│   ├── broker.py            # FastAPI broker with Nova Pro integration
+├── broker-service/           # Unified Nova Pro broker service
+│   ├── broker.py            # FastAPI broker with unified MCP integration
 │   ├── Dockerfile           # Container configuration
 │   └── requirements.txt     # Python dependencies
 ├── mcp-gateway/             # MCP protocol gateway
@@ -137,6 +155,7 @@ curl -X POST http://YOUR-BROKER-ALB-URL/ask \
 │   └── Dockerfile           # Container configuration
 ├── ecs-mcp-server/          # ECS MCP server (embedded)
 ├── aws-iac-mcp-server/      # Infrastructure MCP server (embedded)
+├── deployment-metrics-mcp-server/ # GitHub Actions deployment tracking (external)
 ├── platform_aws_context/   # AWS context utilities
 ├── scripts/                 # Deployment task definitions
 ├── .github/workflows/       # GitHub Actions
@@ -146,8 +165,12 @@ curl -X POST http://YOUR-BROKER-ALB-URL/ask \
 ## 🔧 Key Components
 
 ### Broker Service
-- **Nova Pro Integration**: Uses `bedrock.converse()` API with agentic loops
-- **Tool Calling**: Routes to ECS and IAC MCP servers via gateway
+- **🔄 Unified MCP Integration**: Single entry point routing to multiple MCP servers
+- **📊 Deployment Metrics**: Real-time GitHub Actions deployment tracking
+- **🤖 Nova Pro Integration**: Uses `bedrock.converse()` API with agentic loops
+- **🧠 Intelligent Tool Routing**: Automatically routes tools based on prefix and capabilities
+- **📝 Metadata Processing**: Extracts repository and run_id from GitHub Actions context
+- **🎯 Auto Run Selection**: Prioritizes RUNNING deployments for real-time tracking
 - **Performance**: ~4-5s response time with proper routing
 
 ### MCP Gateway
@@ -268,6 +291,41 @@ aws ecs run-task --cluster mcp-cluster --task-definition github-runner:3 --launc
 3. **Deploy Services**: Update ECS services with new task definitions
 4. **Test Integration**: Verify broker → gateway → MCP server flow
 5. **GitHub Integration**: Test via PR comments
+
+## 🚀 Deployment Metrics Integration
+
+The unified broker now includes real-time GitHub Actions deployment tracking:
+
+### Available Deployment Tools
+
+- **`deploy_find_latest`**: Find latest deployment runs for a repository
+- **`deploy_get_summary`**: Get detailed deployment summary with timing and status
+- **`deploy_get_run`**: Get specific deployment run details
+- **`deploy_get_steps`**: Get deployment step details and logs
+- **`deploy_find_active`**: Find currently running deployments
+
+### Usage Examples
+
+```bash
+# Get latest deployment for current repository (uses metadata)
+"Get the latest deployment summary"
+
+# Get specific deployment details
+"Get deployment summary for run 20490462868"
+
+# Find running deployments
+"Show me any deployments currently running"
+
+# Get deployment with steps
+"Get deployment summary with run and step details for run_id 20490462868"
+```
+
+### Metadata Integration
+
+When called from GitHub Actions, the broker automatically uses:
+- **Repository**: From `github.repository` context
+- **Run ID**: From `github.run_id` context
+- **Auto-selection**: Prioritizes RUNNING deployments when no run_id specified
 
 ## 📈 Monitoring
 

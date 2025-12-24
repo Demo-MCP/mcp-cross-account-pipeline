@@ -13,6 +13,10 @@ Parameters:
     NoEcho: true
     Description: Database password for metrics user
     MinLength: 8
+  MCPALBListener:
+    Type: String
+    Description: ARN of the existing MCP ALB listener
+    Default: arn:aws:elasticloadbalancing:us-east-1:500330120558:listener/app/mcp-internal-alb/ec8460e17c126e54/49af6a3707a1b926
 
 Resources:
   # Security Group for Lambda
@@ -40,6 +44,11 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
           Description: Allow Lambda access to Postgres
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: sg-0190ab5630f4e7309
+          Description: Allow ECS tasks access to Postgres
 
   # RDS Subnet Group
   DBSubnetGroup:
@@ -47,6 +56,105 @@ Resources:
     Properties:
       DBSubnetGroupDescription: Subnet group for MCP metrics RDS
       SubnetIds: !Ref PrivateSubnetIds
+
+  # VPC Endpoint for KMS
+  KMSVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.kms
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref SecretsManagerEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - kms:Decrypt
+            Resource: '*'
+
+  # VPC Endpoint for Secrets Manager
+  SecretsManagerVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref SecretsManagerEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: '*'
+
+  # Security Group for Secrets Manager VPC Endpoint
+  SecretsManagerEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Secrets Manager VPC endpoint
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: sg-0190ab5630f4e7309
+          Description: Allow HTTPS from ECS tasks
+
+  # ECR Repository for Deployment Metrics MCP (already created manually)
+  # DeploymentMetricsMCPRepository:
+  #   Type: AWS::ECR::Repository
+  #   Properties:
+  #     RepositoryName: deployment-metrics-mcp
+  #     ImageScanningConfiguration:
+  #       ScanOnPush: false
+  #     EncryptionConfiguration:
+  #       EncryptionType: AES256
+
+  # Target Group for Deployment Metrics MCP
+  MetricsMCPTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: metrics-mcp-tg
+      Port: 8080
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  # ALB Listener Rule for /metrics path
+  MetricsMCPListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref MetricsMCPTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /metrics*
+      ListenerArn: !Ref MCPALBListener
+      Priority: 100
+
+  # Secrets Manager Secret for RDS Password
+  DatabasePasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: mcp-metrics-db-password
+      Description: RDS password for MCP metrics database
+      SecretString: !Ref DBPassword
 
   # RDS Postgres Instance (Free Tier)
   MetricsDatabase:
@@ -90,6 +198,14 @@ Resources:
                 Action:
                   - rds:DescribeDBInstances
                 Resource: '*'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref DatabasePasswordSecret
 
   # Lambda Function
   MetricsWriterFunction:
@@ -138,7 +254,78 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
+  # ECS Task Definition for Deployment Metrics MCP
+  DeploymentMetricsMCPTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: deployment-metrics-mcp
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 512
+      Memory: 1024
+      ExecutionRoleArn: arn:aws:iam::500330120558:role/ecsTaskExecutionRole
+      TaskRoleArn: arn:aws:iam::500330120558:role/McpServerTaskRole
+      ContainerDefinitions:
+        - Name: deployment-metrics-mcp
+          Image: 500330120558.dkr.ecr.us-east-1.amazonaws.com/deployment-metrics-mcp:latest
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Essential: true
+          Environment:
+            - Name: DB_HOST
+              Value: !GetAtt MetricsDatabase.Endpoint.Address
+            - Name: DB_PORT
+              Value: 5432
+            - Name: DB_NAME
+              Value: mcp_metrics
+            - Name: DB_USER
+              Value: metrics_user
+          Secrets:
+            - Name: DB_PASSWORD
+              ValueFrom: !Ref DatabasePasswordSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/deployment-metrics-mcp
+              awslogs-region: us-east-1
+              awslogs-stream-prefix: metrics-mcp
+
+  # ECS Service for Deployment Metrics MCP
+  DeploymentMetricsMCPService:
+    Type: AWS::ECS::Service
+    DependsOn: MetricsMCPListenerRule
+    Properties:
+      ServiceName: deployment-metrics-mcp
+      Cluster: mcp-cluster
+      TaskDefinition: !Ref DeploymentMetricsMCPTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - sg-0190ab5630f4e7309
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref MetricsMCPTargetGroup
+          ContainerName: deployment-metrics-mcp
+          ContainerPort: 8080
+
 Outputs:
+  MetricsMCPTargetGroupArn:
+    Description: ARN of the metrics MCP target group
+    Value: !Ref MetricsMCPTargetGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-MetricsMCPTargetGroupArn"
+
+  DatabasePasswordSecretArn:
+    Description: ARN of the database password secret
+    Value: !Ref DatabasePasswordSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabasePasswordSecretArn"
+  
   DatabaseEndpoint:
     Description: RDS Postgres endpoint
     Value: !GetAtt MetricsDatabase.Endpoint.Address

@@ -18,7 +18,30 @@ def get_db_connection():
 
 def lambda_handler(event, context):
     try:
-        # Parse request
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        # Handle direct Lambda invoke (from GitHub workflow)
+        if 'action' in event:
+            action = event['action']
+            logger.info(f"Processing direct invoke action: {action}")
+            
+            conn = get_db_connection()
+            cur = conn.cursor()
+            
+            if action == 'job_start':
+                return handle_job_start(cur, conn, event)
+            elif action == 'job_end':
+                return handle_job_end(cur, conn, event)
+            elif action == 'job_step':
+                return handle_job_step(cur, conn, event)
+            else:
+                logger.error(f"Unknown action: {action}")
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({'error': f'Unknown action: {action}'})
+                }
+        
+        # Handle HTTP API Gateway events (from Function URL)
         if 'body' in event:
             body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
         else:
@@ -39,6 +62,7 @@ def lambda_handler(event, context):
         elif path == '/job/step':
             return handle_job_step(cur, conn, body)
         else:
+            logger.error(f"Unknown path: {path}")
             return {
                 'statusCode': 404,
                 'body': json.dumps({'error': 'Not found'})
@@ -57,24 +81,26 @@ def lambda_handler(event, context):
             conn.close()
 
 def handle_job_start(cur, conn, body):
-    # UPSERT job_metrics by run_id
+    logger.info(f"Processing job_start for run_id: {body.get('run_id')}, repository: {body.get('repository')}")
+    
+    # UPSERT job_metrics by run_id - only use fields we actually have
     sql = """
     INSERT INTO job_metrics (
-        run_id, repository, organization, branch, project_id, app_cat_id,
-        runner_name, workflow_name, workflow_version, job_name, job_status,
-        job_start_time, app_runtime, base_image
+        run_id, repository, organization, branch, 
+        runner_name, workflow_name, job_name, job_status, job_start_time
     ) VALUES (
-        %(run_id)s, %(repository)s, %(organization)s, %(branch)s, %(project_id)s, %(app_cat_id)s,
-        %(runner_name)s, %(workflow_name)s, %(workflow_version)s, %(job_name)s, %(job_status)s,
-        %(job_start_time)s, %(app_runtime)s, %(base_image)s
+        %(run_id)s, %(repository)s, %(organization)s, %(branch)s,
+        %(runner_name)s, %(workflow_name)s, %(job_name)s, %(job_status)s, %(job_start_time)s
     )
     ON CONFLICT (run_id) DO UPDATE SET
         job_status = EXCLUDED.job_status,
         job_start_time = EXCLUDED.job_start_time
     """
     
+    logger.info(f"Executing job_start SQL for run_id: {body.get('run_id')}")
     cur.execute(sql, body)
     conn.commit()
+    logger.info(f"Successfully recorded job_start for run_id: {body.get('run_id')}")
     
     return {
         'statusCode': 200,
@@ -82,6 +108,8 @@ def handle_job_start(cur, conn, body):
     }
 
 def handle_job_end(cur, conn, body):
+    logger.info(f"Processing job_end for run_id: {body.get('run_id')}, status: {body.get('job_status')}")
+    
     # UPDATE job_metrics set end/status/error/duration where run_id
     sql = """
     UPDATE job_metrics SET
@@ -93,8 +121,11 @@ def handle_job_end(cur, conn, body):
     WHERE run_id = %(run_id)s
     """
     
+    logger.info(f"Executing job_end SQL for run_id: {body.get('run_id')}")
     cur.execute(sql, body)
+    rows_affected = cur.rowcount
     conn.commit()
+    logger.info(f"Successfully updated job_end for run_id: {body.get('run_id')}, rows affected: {rows_affected}")
     
     return {
         'statusCode': 200,
