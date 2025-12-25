@@ -90,10 +90,15 @@ async def mcp_endpoint(request: JSONRPCRequest):
             region = args.get("region", "us-east-1")
             custom_specs = args.get("custom_specs", "")
             
-            # Parse custom specs and convert to overrides
-            overrides = parse_custom_specs(custom_specs)
+            # Parse custom specs and convert to template
+            parsed_result = parse_custom_specs(custom_specs)
             
-            return estimate_costs(template_content, region, overrides)
+            if "template" in parsed_result:
+                # Use the generated template
+                import json
+                template_content = json.dumps(parsed_result["template"])
+            
+            return estimate_costs(template_content, region, {})
         
         elif tool_name == "pricingcalc_estimate_from_stack":
             stack_name = args.get("stack_name", "")
@@ -279,43 +284,627 @@ async def mcp_endpoint(request: JSONRPCRequest):
     }
 
 def parse_custom_specs(custom_specs: str) -> Dict[str, Dict]:
-    """Parse human language custom specifications into overrides"""
-    overrides = {}
+    """Parse human language custom specifications into CloudFormation template"""
+    import re
     
-    # Simple parsing for ECS specifications
-    if "ecs" in custom_specs.lower():
-        ecs_override = {}
-        
-        # Extract vCPU
-        import re
-        vcpu_match = re.search(r'(\d+)\s*vcpu', custom_specs.lower())
-        if vcpu_match:
-            ecs_override['vcpu'] = int(vcpu_match.group(1))
-        
-        # Extract memory
-        memory_match = re.search(r'(\d+)\s*gb\s*memory', custom_specs.lower())
-        if memory_match:
-            ecs_override['memory_gb'] = int(memory_match.group(1))
-        
-        if ecs_override:
-            overrides['ecs'] = ecs_override
+    # Create a template structure with resources
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {}
+    }
     
-    # Simple parsing for Lambda specifications  
-    if "lambda" in custom_specs.lower():
-        lambda_override = {}
+    specs_lower = custom_specs.lower()
+    
+    # EC2 Instance parsing
+    if "ec2" in specs_lower or "instance" in specs_lower:
+        vcpu_match = re.search(r'(\d+)\s*vcpu', specs_lower)
+        memory_match = re.search(r'(\d+)\s*gb\s*memory', specs_lower)
         
-        # Extract memory
-        memory_match = re.search(r'lambda.*?(\d+)\s*(mb|gb)', custom_specs.lower())
+        instance_type = "t3.micro"  # default
+        
+        if vcpu_match and memory_match:
+            vcpu = int(vcpu_match.group(1))
+            memory = int(memory_match.group(1))
+            
+            # Map vCPU/memory to instance types
+            if vcpu >= 8 and memory >= 15:
+                instance_type = "m5.2xlarge"  # 8 vCPU, 32 GB
+            elif vcpu >= 4 and memory >= 8:
+                instance_type = "m5.xlarge"   # 4 vCPU, 16 GB
+            elif vcpu >= 2 and memory >= 4:
+                instance_type = "m5.large"    # 2 vCPU, 8 GB
+            elif vcpu >= 1:
+                instance_type = "t3.small"    # 2 vCPU, 2 GB
+        
+        template["Resources"]["CustomEC2Instance"] = {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "InstanceType": instance_type
+            }
+        }
+    
+    # RDS Database parsing
+    if "rds" in specs_lower or "database" in specs_lower or "mysql" in specs_lower or "postgres" in specs_lower:
+        db_class = "db.t3.micro"
+        storage = 20
+        engine = "mysql"
+        
+        storage_match = re.search(r'(\d+)\s*gb\s*storage', specs_lower)
+        if storage_match:
+            storage = int(storage_match.group(1))
+        
+        if "postgres" in specs_lower:
+            engine = "postgres"
+        elif "oracle" in specs_lower:
+            engine = "oracle-ee"
+        
+        if "large" in specs_lower:
+            db_class = "db.t3.large"
+        elif "medium" in specs_lower:
+            db_class = "db.t3.medium"
+        
+        template["Resources"]["CustomRDSInstance"] = {
+            "Type": "AWS::RDS::DBInstance",
+            "Properties": {
+                "DBInstanceClass": db_class,
+                "AllocatedStorage": storage,
+                "Engine": engine
+            }
+        }
+    
+    # Lambda Function parsing
+    if "lambda" in specs_lower or "function" in specs_lower:
+        memory = 128  # default
+        
+        memory_match = re.search(r'(\d+)\s*(mb|gb)', specs_lower)
         if memory_match:
             memory_val = int(memory_match.group(1))
             if memory_match.group(2) == 'gb':
                 memory_val *= 1024
-            lambda_override['memory_mb'] = memory_val
+            memory = memory_val
         
-        if lambda_override:
-            overrides['lambda'] = lambda_override
+        template["Resources"]["CustomLambdaFunction"] = {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "MemorySize": memory,
+                "Runtime": "python3.9",
+                "Handler": "index.handler",
+                "Code": {"ZipFile": "def handler(event, context): return 'Hello'"}
+            }
+        }
     
-    return overrides
+    # S3 Bucket parsing
+    if "s3" in specs_lower or "bucket" in specs_lower or "storage" in specs_lower:
+        template["Resources"]["CustomS3Bucket"] = {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {}
+        }
+    
+    # DynamoDB Table parsing
+    if "dynamodb" in specs_lower or "table" in specs_lower or "nosql" in specs_lower:
+        read_capacity = 5
+        write_capacity = 5
+        
+        capacity_match = re.search(r'(\d+)\s*(read|write)\s*capacity', specs_lower)
+        if capacity_match:
+            capacity_val = int(capacity_match.group(1))
+            if "read" in capacity_match.group(2):
+                read_capacity = capacity_val
+            else:
+                write_capacity = capacity_val
+        
+        template["Resources"]["CustomDynamoDBTable"] = {
+            "Type": "AWS::DynamoDB::Table",
+            "Properties": {
+                "AttributeDefinitions": [
+                    {"AttributeName": "id", "AttributeType": "S"}
+                ],
+                "KeySchema": [
+                    {"AttributeName": "id", "KeyType": "HASH"}
+                ],
+                "ProvisionedThroughput": {
+                    "ReadCapacityUnits": read_capacity,
+                    "WriteCapacityUnits": write_capacity
+                }
+            }
+        }
+    
+    # ELB/ALB parsing
+    if "elb" in specs_lower or "load balancer" in specs_lower or "alb" in specs_lower:
+        lb_type = "application"
+        if "network" in specs_lower or "nlb" in specs_lower:
+            lb_type = "network"
+        
+        template["Resources"]["CustomLoadBalancer"] = {
+            "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "Properties": {
+                "Type": lb_type,
+                "Scheme": "internet-facing"
+            }
+        }
+    
+    # ECS Service parsing
+    if "ecs" in specs_lower and ("service" in specs_lower or "container" in specs_lower):
+        vcpu = 256
+        memory = 512
+        
+        vcpu_match = re.search(r'(\d+)\s*vcpu', specs_lower)
+        memory_match = re.search(r'(\d+)\s*gb\s*memory', specs_lower)
+        
+        if vcpu_match:
+            vcpu = int(vcpu_match.group(1)) * 1024  # Convert to CPU units
+        if memory_match:
+            memory = int(memory_match.group(1)) * 1024  # Convert to MB
+        
+        template["Resources"]["CustomECSService"] = {
+            "Type": "AWS::ECS::Service",
+            "Properties": {
+                "Cluster": "default",
+                "TaskDefinition": {
+                    "Cpu": str(vcpu),
+                    "Memory": str(memory),
+                    "RequiresCompatibilities": ["FARGATE"],
+                    "NetworkMode": "awsvpc"
+                }
+            }
+        }
+    
+    # ElastiCache parsing
+    if "elasticache" in specs_lower or "redis" in specs_lower or "memcached" in specs_lower:
+        engine = "redis"
+        node_type = "cache.t3.micro"
+        
+        if "memcached" in specs_lower:
+            engine = "memcached"
+        
+        if "large" in specs_lower:
+            node_type = "cache.t3.large"
+        elif "medium" in specs_lower:
+            node_type = "cache.t3.medium"
+        
+        template["Resources"]["CustomElastiCacheCluster"] = {
+            "Type": "AWS::ElastiCache::CacheCluster",
+            "Properties": {
+                "Engine": engine,
+                "CacheNodeType": node_type,
+                "NumCacheNodes": 1
+            }
+        }
+    
+    # CloudFront parsing
+    if "cloudfront" in specs_lower or "cdn" in specs_lower:
+        template["Resources"]["CustomCloudFrontDistribution"] = {
+            "Type": "AWS::CloudFront::Distribution",
+            "Properties": {
+                "DistributionConfig": {
+                    "Origins": [{
+                        "Id": "myOrigin",
+                        "DomainName": "example.com",
+                        "CustomOriginConfig": {
+                            "HTTPPort": 80,
+                            "OriginProtocolPolicy": "http-only"
+                        }
+                    }],
+                    "DefaultCacheBehavior": {
+                        "TargetOriginId": "myOrigin",
+                        "ViewerProtocolPolicy": "redirect-to-https"
+                    },
+                    "Enabled": True
+                }
+            }
+        }
+    
+    # API Gateway parsing
+    if "api gateway" in specs_lower or "api" in specs_lower:
+        template["Resources"]["CustomAPIGateway"] = {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": "CustomAPI",
+                "Description": "Custom API Gateway"
+            }
+        }
+    
+    # SNS Topic parsing
+    if "sns" in specs_lower or "topic" in specs_lower or "notification" in specs_lower:
+        template["Resources"]["CustomSNSTopic"] = {
+            "Type": "AWS::SNS::Topic",
+            "Properties": {
+                "TopicName": "CustomTopic"
+            }
+        }
+    
+    # SQS Queue parsing
+    if "sqs" in specs_lower or "queue" in specs_lower:
+        template["Resources"]["CustomSQSQueue"] = {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+                "QueueName": "CustomQueue"
+            }
+        }
+    
+    # Kinesis Stream parsing
+    if "kinesis" in specs_lower or "stream" in specs_lower:
+        shards = 1
+        shard_match = re.search(r'(\d+)\s*shard', specs_lower)
+        if shard_match:
+            shards = int(shard_match.group(1))
+        
+        template["Resources"]["CustomKinesisStream"] = {
+            "Type": "AWS::Kinesis::Stream",
+            "Properties": {
+                "ShardCount": shards
+            }
+        }
+    
+    # EFS File System parsing
+    if "efs" in specs_lower or "file system" in specs_lower:
+        template["Resources"]["CustomEFSFileSystem"] = {
+            "Type": "AWS::EFS::FileSystem",
+            "Properties": {
+                "PerformanceMode": "generalPurpose"
+            }
+        }
+    
+    # EBS Volume parsing
+    if "ebs" in specs_lower or "volume" in specs_lower:
+        size = 10
+        volume_type = "gp3"
+        
+        size_match = re.search(r'(\d+)\s*gb', specs_lower)
+        if size_match:
+            size = int(size_match.group(1))
+        
+        if "io1" in specs_lower or "io2" in specs_lower:
+            volume_type = "io1"
+        elif "gp2" in specs_lower:
+            volume_type = "gp2"
+        
+        template["Resources"]["CustomEBSVolume"] = {
+            "Type": "AWS::EC2::Volume",
+            "Properties": {
+                "Size": size,
+                "VolumeType": volume_type,
+                "AvailabilityZone": "us-east-1a"
+            }
+        }
+    
+    # NAT Gateway parsing
+    if "nat gateway" in specs_lower or "nat" in specs_lower:
+        template["Resources"]["CustomNATGateway"] = {
+            "Type": "AWS::EC2::NatGateway",
+            "Properties": {
+                "AllocationId": "eipalloc-12345",
+                "SubnetId": "subnet-12345"
+            }
+        }
+    
+    # VPC Endpoint parsing
+    if "vpc endpoint" in specs_lower or "endpoint" in specs_lower:
+        template["Resources"]["CustomVPCEndpoint"] = {
+            "Type": "AWS::EC2::VPCEndpoint",
+            "Properties": {
+                "VpcId": "vpc-12345",
+                "ServiceName": "com.amazonaws.us-east-1.s3"
+            }
+        }
+    
+    # CloudWatch Log Group parsing
+    if "cloudwatch" in specs_lower or "logs" in specs_lower:
+        retention = 7
+        retention_match = re.search(r'(\d+)\s*day', specs_lower)
+        if retention_match:
+            retention = int(retention_match.group(1))
+        
+        template["Resources"]["CustomLogGroup"] = {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "LogGroupName": "/custom/logs",
+                "RetentionInDays": retention
+            }
+        }
+    
+    # Redshift Cluster parsing
+    if "redshift" in specs_lower or "data warehouse" in specs_lower:
+        node_type = "dc2.large"
+        nodes = 1
+        
+        if "large" in specs_lower:
+            node_type = "dc2.8xlarge"
+        
+        nodes_match = re.search(r'(\d+)\s*node', specs_lower)
+        if nodes_match:
+            nodes = int(nodes_match.group(1))
+        
+        template["Resources"]["CustomRedshiftCluster"] = {
+            "Type": "AWS::Redshift::Cluster",
+            "Properties": {
+                "NodeType": node_type,
+                "NumberOfNodes": nodes,
+                "MasterUsername": "admin",
+                "MasterUserPassword": "password123",
+                "DBName": "mydb"
+            }
+        }
+    
+    # EKS Cluster parsing
+    if "eks" in specs_lower or "kubernetes" in specs_lower:
+        template["Resources"]["CustomEKSCluster"] = {
+            "Type": "AWS::EKS::Cluster",
+            "Properties": {
+                "Name": "custom-cluster",
+                "Version": "1.21",
+                "RoleArn": "arn:aws:iam::123456789012:role/eks-service-role"
+            }
+        }
+    
+    # Step Functions parsing
+    if "step functions" in specs_lower or "state machine" in specs_lower:
+        template["Resources"]["CustomStateMachine"] = {
+            "Type": "AWS::StepFunctions::StateMachine",
+            "Properties": {
+                "StateMachineName": "CustomStateMachine",
+                "DefinitionString": '{"Comment": "A Hello World example"}',
+                "RoleArn": "arn:aws:iam::123456789012:role/stepfunctions-role"
+            }
+        }
+    
+    # Glue Job parsing
+    if "glue" in specs_lower or "etl" in specs_lower:
+        template["Resources"]["CustomGlueJob"] = {
+            "Type": "AWS::Glue::Job",
+            "Properties": {
+                "Name": "CustomGlueJob",
+                "Role": "arn:aws:iam::123456789012:role/glue-role",
+                "Command": {
+                    "Name": "glueetl",
+                    "ScriptLocation": "s3://my-bucket/script.py"
+                }
+            }
+        }
+    
+    # CodeBuild Project parsing
+    if "codebuild" in specs_lower or "build" in specs_lower:
+        template["Resources"]["CustomCodeBuildProject"] = {
+            "Type": "AWS::CodeBuild::Project",
+            "Properties": {
+                "Name": "CustomBuildProject",
+                "ServiceRole": "arn:aws:iam::123456789012:role/codebuild-role",
+                "Artifacts": {"Type": "NO_ARTIFACTS"},
+                "Environment": {
+                    "Type": "LINUX_CONTAINER",
+                    "ComputeType": "BUILD_GENERAL1_MEDIUM",
+                    "Image": "aws/codebuild/standard:5.0"
+                },
+                "Source": {"Type": "NO_SOURCE"}
+            }
+        }
+    
+    # Secrets Manager parsing
+    if "secrets manager" in specs_lower or "secret" in specs_lower:
+        template["Resources"]["CustomSecret"] = {
+            "Type": "AWS::SecretsManager::Secret",
+            "Properties": {
+                "Name": "CustomSecret",
+                "Description": "Custom secret"
+            }
+        }
+    
+    # Route53 Zone parsing
+    if "route53" in specs_lower or "dns" in specs_lower or "hosted zone" in specs_lower:
+        template["Resources"]["CustomHostedZone"] = {
+            "Type": "AWS::Route53::HostedZone",
+            "Properties": {
+                "Name": "example.com"
+            }
+        }
+    
+    # CloudTrail parsing
+    if "cloudtrail" in specs_lower or "audit" in specs_lower:
+        template["Resources"]["CustomCloudTrail"] = {
+            "Type": "AWS::CloudTrail::Trail",
+            "Properties": {
+                "TrailName": "CustomTrail",
+                "S3BucketName": "my-cloudtrail-bucket",
+                "IsLogging": True
+            }
+        }
+    
+    # Config Rule parsing
+    if "config" in specs_lower or "compliance" in specs_lower:
+        template["Resources"]["CustomConfigRule"] = {
+            "Type": "AWS::Config::ConfigRule",
+            "Properties": {
+                "ConfigRuleName": "CustomConfigRule",
+                "Source": {
+                    "Owner": "AWS",
+                    "SourceIdentifier": "S3_BUCKET_PUBLIC_ACCESS_PROHIBITED"
+                }
+            }
+        }
+    
+    # Backup Vault parsing
+    if "backup" in specs_lower or "vault" in specs_lower:
+        template["Resources"]["CustomBackupVault"] = {
+            "Type": "AWS::Backup::BackupVault",
+            "Properties": {
+                "BackupVaultName": "CustomBackupVault"
+            }
+        }
+    
+    # MSK Cluster parsing
+    if "msk" in specs_lower or "kafka" in specs_lower:
+        template["Resources"]["CustomMSKCluster"] = {
+            "Type": "AWS::MSK::Cluster",
+            "Properties": {
+                "ClusterName": "CustomMSKCluster",
+                "KafkaVersion": "2.8.0",
+                "NumberOfBrokerNodes": 3,
+                "BrokerNodeGroupInfo": {
+                    "InstanceType": "kafka.m5.large",
+                    "ClientSubnets": ["subnet-12345", "subnet-67890"]
+                }
+            }
+        }
+    
+    # MQ Broker parsing
+    if "mq" in specs_lower or "message broker" in specs_lower or "activemq" in specs_lower:
+        template["Resources"]["CustomMQBroker"] = {
+            "Type": "AWS::AmazonMQ::Broker",
+            "Properties": {
+                "BrokerName": "CustomMQBroker",
+                "EngineType": "ActiveMQ",
+                "EngineVersion": "5.15.0",
+                "HostInstanceType": "mq.t2.micro",
+                "Users": [{
+                    "Username": "admin",
+                    "Password": "password123"
+                }]
+            }
+        }
+    
+    # Directory Service parsing
+    if "directory service" in specs_lower or "active directory" in specs_lower:
+        template["Resources"]["CustomDirectory"] = {
+            "Type": "AWS::DirectoryService::MicrosoftAD",
+            "Properties": {
+                "Name": "corp.example.com",
+                "Password": "password123",
+                "VpcSettings": {
+                    "VpcId": "vpc-12345",
+                    "SubnetIds": ["subnet-12345", "subnet-67890"]
+                }
+            }
+        }
+    
+    # DMS Replication Instance parsing
+    if "dms" in specs_lower or "database migration" in specs_lower:
+        template["Resources"]["CustomDMSInstance"] = {
+            "Type": "AWS::DMS::ReplicationInstance",
+            "Properties": {
+                "ReplicationInstanceIdentifier": "custom-dms-instance",
+                "ReplicationInstanceClass": "dms.t2.micro"
+            }
+        }
+    
+    # DocumentDB Cluster parsing
+    if "documentdb" in specs_lower or "docdb" in specs_lower or "mongodb" in specs_lower:
+        template["Resources"]["CustomDocDBCluster"] = {
+            "Type": "AWS::DocDB::DBCluster",
+            "Properties": {
+                "DBClusterIdentifier": "custom-docdb-cluster",
+                "MasterUsername": "admin",
+                "MasterUserPassword": "password123"
+            }
+        }
+    
+    # Neptune Cluster parsing
+    if "neptune" in specs_lower or "graph database" in specs_lower:
+        template["Resources"]["CustomNeptuneCluster"] = {
+            "Type": "AWS::Neptune::DBCluster",
+            "Properties": {
+                "DBClusterIdentifier": "custom-neptune-cluster"
+            }
+        }
+    
+    # FSx File System parsing
+    if "fsx" in specs_lower or "lustre" in specs_lower or "windows file system" in specs_lower:
+        fs_type = "LUSTRE"
+        if "windows" in specs_lower:
+            fs_type = "WINDOWS"
+        
+        template["Resources"]["CustomFSxFileSystem"] = {
+            "Type": "AWS::FSx::FileSystem",
+            "Properties": {
+                "FileSystemType": fs_type,
+                "StorageCapacity": 1200,
+                "SubnetIds": ["subnet-12345"]
+            }
+        }
+    
+    # Lightsail Instance parsing
+    if "lightsail" in specs_lower:
+        template["Resources"]["CustomLightsailInstance"] = {
+            "Type": "AWS::Lightsail::Instance",
+            "Properties": {
+                "InstanceName": "custom-lightsail",
+                "BlueprintId": "amazon_linux_2",
+                "BundleId": "nano_2_0"
+            }
+        }
+    
+    # Global Accelerator parsing
+    if "global accelerator" in specs_lower or "accelerator" in specs_lower:
+        template["Resources"]["CustomGlobalAccelerator"] = {
+            "Type": "AWS::GlobalAccelerator::Accelerator",
+            "Properties": {
+                "Name": "CustomAccelerator",
+                "IpAddressType": "IPV4",
+                "Enabled": True
+            }
+        }
+    
+    # WAF Web ACL parsing
+    if "waf" in specs_lower or "web acl" in specs_lower:
+        template["Resources"]["CustomWebACL"] = {
+            "Type": "AWS::WAFv2::WebACL",
+            "Properties": {
+                "Name": "CustomWebACL",
+                "Scope": "REGIONAL",
+                "DefaultAction": {"Allow": {}},
+                "Rules": []
+            }
+        }
+    
+    # Network Firewall parsing
+    if "network firewall" in specs_lower or "firewall" in specs_lower:
+        template["Resources"]["CustomNetworkFirewall"] = {
+            "Type": "AWS::NetworkFirewall::Firewall",
+            "Properties": {
+                "FirewallName": "CustomFirewall",
+                "FirewallPolicyArn": "arn:aws:network-firewall:us-east-1:123456789012:firewall-policy/policy",
+                "VpcId": "vpc-12345",
+                "SubnetMappings": [{"SubnetId": "subnet-12345"}]
+            }
+        }
+    
+    # Transfer Server parsing
+    if "transfer" in specs_lower or "sftp" in specs_lower:
+        template["Resources"]["CustomTransferServer"] = {
+            "Type": "AWS::Transfer::Server",
+            "Properties": {
+                "EndpointType": "PUBLIC",
+                "Protocols": ["SFTP"]
+            }
+        }
+    
+    # MWAA Environment parsing
+    if "mwaa" in specs_lower or "airflow" in specs_lower:
+        template["Resources"]["CustomMWAAEnvironment"] = {
+            "Type": "AWS::MWAA::Environment",
+            "Properties": {
+                "Name": "CustomAirflowEnvironment",
+                "SourceBucketArn": "arn:aws:s3:::my-airflow-bucket",
+                "DagS3Path": "dags/",
+                "ExecutionRoleArn": "arn:aws:iam::123456789012:role/mwaa-role",
+                "NetworkConfiguration": {
+                    "SubnetIds": ["subnet-12345", "subnet-67890"]
+                }
+            }
+        }
+    
+    # Grafana Workspace parsing
+    if "grafana" in specs_lower or "monitoring dashboard" in specs_lower:
+        template["Resources"]["CustomGrafanaWorkspace"] = {
+            "Type": "AWS::Grafana::Workspace",
+            "Properties": {
+                "Name": "CustomGrafanaWorkspace",
+                "AccountAccessType": "CURRENT_ACCOUNT",
+                "AuthenticationProviders": ["AWS_SSO"]
+            }
+        }
+    
+    # Return the template as overrides format
+    return {"template": template}
 
 def estimate_costs(template_content: str, region: str, overrides: Dict) -> Dict:
     """Main cost estimation function"""
@@ -356,6 +945,10 @@ def estimate_costs(template_content: str, region: str, overrides: Dict) -> Dict:
             template = yaml.load(template_content, Loader=CFNLoader)
     except Exception as e:
         return {"error": f"Failed to parse template: {e}"}
+    
+    # Handle empty or None template
+    if template is None:
+        template = {"Resources": {}}
     
     # Extract resources
     resources = template.get('Resources', {})
