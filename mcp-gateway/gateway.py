@@ -2,10 +2,15 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import logging
+
+# Ensure module paths are available for imports
+sys.path.insert(0, '/app/aws-iac-mcp-server')
+sys.path.insert(0, '/app/ecs-mcp-server')
 
 app = FastAPI(title="MCP Gateway", version="1.0.0")
 
@@ -45,15 +50,19 @@ async def start_mcp_server(server_type: str):
             return processes[server_type]
     
     env = os.environ.copy()
-    # Add both package roots to PYTHONPATH to ensure 'import awslabs' works
     base_path = "/app"
-    env["PYTHONPATH"] = f"{base_path}/ecs-mcp-server:{base_path}/aws-iac-mcp-server:" + env.get("PYTHONPATH", "")
+    
+    # FIX: Point PYTHONPATH to the folders that DIRECTLY contain the 'awslabs' folder
+    # For ECS: /app/ecs-mcp-server/
+    # For IAC: /app/aws-iac-mcp-server/
+    env["PYTHONPATH"] = f"{base_path}/ecs-mcp-server:{base_path}/aws-iac-mcp-server:{base_path}:" + env.get("PYTHONPATH", "")
     
     if server_type == "ecs":
+        # Full module path: awslabs.ecs_mcp_server.main
         cmd = ["python", "-m", "awslabs.ecs_mcp_server.main"]
     elif server_type == "iac":
-        # Try using __main__.py entry point instead of server.py
-        cmd = ["python", "-m", "awslabs.aws_iac_mcp_server"] 
+        # Use direct script execution with explicit PYTHONPATH
+        cmd = ["env", "PYTHONPATH=/app/aws-iac-mcp-server:/app", "python", "/app/aws-iac-mcp-server/awslabs/aws_iac_mcp_server/server.py"]
     else:
         raise ValueError(f"Unknown server type: {server_type}")
  

@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Pricing Calculator MCP Service - ECR + ECS Fargate service with ALB integration'
+
+Parameters:
+  ALBSecurityGroupId:
+    Type: String
+    Default: sg-0123456789abcdef0
+    Description: Security group ID of the existing MCP ALB
+  
+  ALBListenerArn:
+    Type: String
+    Default: arn:aws:elasticloadbalancing:us-east-1:500330120558:listener/app/internal-mcp-internal-alb/1234567890123456/1234567890123456
+    Description: ARN of the existing ALB listener
+
+Resources:
+  # ECR Repository
+  PricingCalcECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: pricingcalc-mcp
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # Security Group for Pricing Calculator Service
+  PricingCalcSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for pricing calculator MCP service
+      VpcId: vpc-09935a80be37148d0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroupId
+          Description: Allow inbound from ALB on port 8080
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: pricingcalc-mcp-sg
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: mcp-cluster
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  # CloudWatch Log Group
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/pricingcalc-mcp
+      RetentionInDays: 7
+
+  # ECS Execution Role
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: '*'
+
+  # ECS Task Role
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: '*'
+        - PolicyName: PricingAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - pricing:GetProducts
+                  - pricing:DescribeServices
+                Resource: '*'
+
+  # Task Definition
+  PricingCalcTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: pricingcalc-mcp
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !Ref ECSExecutionRole
+      TaskRoleArn: !Ref ECSTaskRole
+      ContainerDefinitions:
+        - Name: pricingcalc-mcp
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/pricingcalc-mcp:latest"
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "curl -f http://localhost:8080/health || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: pricingcalc-mcp
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+
+  # Target Group
+  PricingCalcTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: pricingcalc-mcp-tg
+      Port: 8080
+      Protocol: HTTP
+      VpcId: vpc-09935a80be37148d0
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  # ALB Listener Rule
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListenerArn
+      Priority: 100
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /pricingcalc*
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref PricingCalcTargetGroup
+
+  # ECS Service
+  PricingCalcService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListenerRule
+    Properties:
+      ServiceName: pricingcalc-mcp
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref PricingCalcTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref PricingCalcSecurityGroup
+          Subnets:
+            - subnet-0d1a30fbc37023fea
+            - subnet-0b296ab71b4c7e39d
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: pricingcalc-mcp
+          ContainerPort: 8080
+          TargetGroupArn: !Ref PricingCalcTargetGroup
+      HealthCheckGracePeriodSeconds: 120
+
+Outputs:
+  ECRRepositoryURI:
+    Description: URI of the pricing calculator ECR repository
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${PricingCalcECRRepository}"
+  
+  ServiceEndpoint:
+    Description: Endpoint for the pricing calculator service
+    Value: "http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com/pricingcalc"

@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import json
-from ..client.aws_client import get_aws_client
+from awslabs.aws_iac_mcp_server.client.aws_client import get_aws_client
 from platform_aws_context.assume_role import get_client_for_account
-from ..data.cloudformation_failure_cases import match_failure_case
+from awslabs.aws_iac_mcp_server.data.cloudformation_failure_cases import match_failure_case
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 

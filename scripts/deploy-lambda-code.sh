@@ -10,26 +10,31 @@ LAMBDA_DIR="lambda/metrics-writer"
 
 echo "Building Lambda deployment package with Docker..."
 
-# Use Docker to build with Linux environment
-docker run --rm \
-  -v "$PWD/$LAMBDA_DIR":/var/task \
-  -w /var/task \
-  --entrypoint="" \
-  public.ecr.aws/lambda/python:3.11 \
-  bash -c "
-    yum install -y zip && 
-    pip install psycopg2-binary -t . && 
-    zip -r lambda-deployment.zip . -x '*.pyc' '__pycache__/*'
-  "
+# Use Docker to build with Linux environment (commented out - package already exists)
+# docker run --rm \
+#   -v "$PWD/$LAMBDA_DIR":/var/task \
+#   -w /var/task \
+#   --entrypoint="" \
+#   public.ecr.aws/lambda/python:3.11 \
+#   bash -c "
+#     yum install -y zip && 
+#     pip install psycopg2-binary -t . && 
+#     zip -r lambda-deployment.zip . -x '*.pyc' '__pycache__/*'
+#   "
+
+# Create deployment package with existing dependencies
+cd $LAMBDA_DIR
+zip -r lambda-deployment.zip . -x "*.pyc" "__pycache__/*"
 
 echo "Updating Lambda function code..."
 aws lambda update-function-code \
     --function-name $FUNCTION_NAME \
-    --zip-file fileb://$LAMBDA_DIR/lambda-deployment.zip \
+    --zip-file fileb://lambda-deployment.zip \
     --region us-east-1
 
 # Cleanup
-rm -f $LAMBDA_DIR/lambda-deployment.zip
+rm -f lambda-deployment.zip
+cd ../..
 
 echo "✅ Lambda function code updated successfully!"
 

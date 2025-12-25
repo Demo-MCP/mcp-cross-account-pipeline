@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import subprocess
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -48,10 +49,14 @@ async def start_mcp_server(server_type: str):
     if processes[server_type] is not None:
         return processes[server_type]
     
+    # Define environment variables to include the app directory in the path
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/app/ecs-mcp-server:/app/aws-iac-mcp-server:" + env.get("PYTHONPATH", "")
+    
     if server_type == "ecs":
-        cmd = ["python", "-m", "awslabs.ecs-mcp-server"]
+        cmd = ["python", "-m", "awslabs.ecs_mcp_server.main"]
     elif server_type == "iac":
-        cmd = ["python", "-m", "awslabs.aws-iac-mcp-server"]
+        cmd = ["python", "-m", "awslabs.aws_iac_mcp_server"]
     else:
         raise ValueError(f"Unknown server type: {server_type}")
     
@@ -59,7 +64,8 @@ async def start_mcp_server(server_type: str):
         *cmd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
+        env=env
     )
     
     processes[server_type] = process

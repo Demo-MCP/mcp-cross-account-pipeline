@@ -9,6 +9,19 @@ from typing import Dict, Any, List
 
 app = FastAPI(title="MCP Broker Service")
 
+# Cache tools at startup to avoid delays on each request
+_cached_tools = None
+
+def initialize_tools():
+    """Initialize tools cache at startup"""
+    global _cached_tools
+    _cached_tools = get_available_tools()
+    print(f"[STARTUP] Cached {len(_cached_tools)} tools")
+
+@app.on_event("startup")
+async def startup_event():
+    initialize_tools()
+
 class AskRequest(BaseModel):
     ask_text: str  # Changed from question to ask_text for workflow alignment
     shim_url: str = "http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com"
@@ -23,15 +36,13 @@ async def health_check():
 @app.get("/tools")
 async def list_tools():
     """List all available tools for debugging"""
-    tools = get_available_tools()
-    return {"tools": [tool["toolSpec"]["name"] for tool in tools], "count": len(tools)}
+    return {"tools": [tool["toolSpec"]["name"] for tool in _cached_tools], "count": len(_cached_tools)}
 
 @app.post("/ask")
 async def ask_question(request: AskRequest):
     try:
         print(f"[ASK] Question: {request.ask_text}")
-        tools = get_available_tools()
-        result = call_bedrock(request.ask_text, tools, request.shim_url, request.account_id, request.region, request.metadata)
+        result = call_bedrock(request.ask_text, _cached_tools, request.shim_url, request.account_id, request.region, request.metadata)
         print(f"[ASK] Response: {result}")
         return {"answer": result}  # Changed from response to answer for workflow alignment
     except Exception as e:
@@ -90,7 +101,10 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
                 print(f"[BEDROCK] Tool input: {tool_input}")
 
                 # Call your shim/Fargate backend
-                if tool_name.startswith('deploy_'):
+                if tool_name.startswith('pricingcalc_'):
+                    # Route pricing calculator tools to pricing MCP server
+                    result_data = call_pricing_tool(tool_name, tool_input)
+                elif tool_name.startswith('deploy_'):
                     # Route deployment metrics tools to metrics MCP server
                     # Extract missing parameters from metadata
                     if metadata:
@@ -242,6 +256,43 @@ def call_metrics_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, A
         print(f"[METRICS] Error calling {tool_name}: {e}")
         return {"error": str(e)}
 
+def call_pricing_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Call pricing calculator MCP server directly via ALB"""
+    try:
+        # Get ALB URL from environment or use actual ALB
+        alb_url = os.environ.get('ALB_URL', 'http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com')
+        
+        print(f"[PRICING] Calling {tool_name} with timeout=90s")
+        
+        # Format as MCP JSON-RPC 2.0 request
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": tool_input
+            }
+        }
+        
+        response = requests.post(
+            f"{alb_url}/pricingcalc",
+            json=mcp_request,
+            headers={"Content-Type": "application/json"},
+            timeout=60
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        print(f"[PRICING] Success: {tool_name}")
+        
+        # Extract result from MCP response - pricing tools return direct JSON
+        return result
+        
+    except Exception as e:
+        print(f"[PRICING] Error calling {tool_name}: {e}")
+        return {"error": str(e)}
+
 def get_available_tools() -> list:
     """Get tools - static IAC/ECS + dynamic metrics tools"""
     # Static IAC and ECS tools
@@ -318,6 +369,31 @@ def get_available_tools() -> list:
                         }
                     })
                 print(f"[TOOLS] Added {len(result['result']['tools'])} metrics tools")
+    except Exception as e:
+        print(f"[TOOLS] Failed to fetch metrics tools: {e}")
+    
+    # Dynamically fetch pricing calculator tools
+    try:
+        response = requests.post(
+            f"{alb_url}/pricingcalc",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"Content-Type": "application/json"},
+            timeout=5
+        )
+        if response.status_code == 200:
+            result = response.json()
+            if 'result' in result and 'tools' in result['result']:
+                for tool in result['result']['tools']:
+                    tools.append({
+                        "toolSpec": {
+                            "name": tool['name'],
+                            "description": tool['description'],
+                            "inputSchema": {"json": tool['inputSchema']}
+                        }
+                    })
+                print(f"[TOOLS] Added {len(result['result']['tools'])} pricing calculator tools")
+    except Exception as e:
+        print(f"[TOOLS] Failed to fetch pricing calculator tools: {e}")
     except Exception as e:
         print(f"[TOOLS] Error fetching metrics tools: {e}")
     

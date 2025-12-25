@@ -1,0 +1,54 @@
+{
+  "family": "deployment-metrics-mcp",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::500330120558:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::500330120558:role/McpServerTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "deployment-metrics-mcp",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/deployment-metrics-mcp:latest",
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        {
+          "name": "DB_HOST",
+          "value": "mcp-metrics-db.c8n6ce6mmzmc.us-east-1.rds.amazonaws.com"
+        },
+        {
+          "name": "DB_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "DB_NAME",
+          "value": "mcp_metrics"
+        },
+        {
+          "name": "DB_USER",
+          "value": "metrics_user"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "DB_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:500330120558:secret:mcp-metrics-db-password-I3Mag7"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/deployment-metrics-mcp",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "metrics-mcp"
+        }
+      }
+    }
+  ]
+}

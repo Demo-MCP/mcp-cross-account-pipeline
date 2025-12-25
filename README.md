@@ -19,12 +19,25 @@ GitHub PR Comment → GitHub Actions → Broker Service → MCP Gateway → MCP 
 * **🔗 GitHub Integration**: PR comment triggers and responses
 * **🏗️ Multi-Service**: ECS, Infrastructure-as-Code, and deployment analysis
 
+### 🆕 New: AWS Pricing Calculator Integration
+
+The system now includes comprehensive AWS cost estimation capabilities:
+
+- **Real-Time Pricing**: Uses AWS Pricing API for accurate, up-to-date cost calculations
+- **CloudFormation Support**: Estimates costs from CloudFormation templates (YAML/JSON)
+- **Cross-Account Pricing**: Price stacks deployed in different AWS accounts
+- **47 AWS Services**: Supports EC2, RDS, Lambda, S3, ECS, ALB, and 40+ other services
+- **Free Tier Handling**: Automatically applies AWS Free Tier allowances
+- **Monthly Estimates**: Provides detailed monthly cost breakdowns
+- **Template Parsing**: Handles CloudFormation intrinsic functions and references
+
 ### 🆕 New: Unified MCP Broker Integration
 
 The broker service now provides a single, intelligent entry point for all deployment tools:
 
-- **Dynamic Tool Discovery**: Automatically discovers deployment metrics tools from MCP server
-- **Intelligent Routing**: Routes `deploy_*` tools to metrics server, others to gateway
+- **Dynamic Tool Discovery**: Automatically discovers deployment metrics and pricing tools from MCP servers
+- **Intelligent Routing**: Routes `deploy_*` tools to metrics server, `pricingcalc_*` tools to pricing server
+- **Tool Caching**: Caches tools at startup for consistent sub-second response times
 - **Metadata Integration**: Uses GitHub Actions metadata for repository and run_id when available
 - **Auto Run Selection**: Automatically selects RUNNING deployments when no run_id provided
 - **Text Response Handling**: Properly formats text responses for Bedrock compatibility
@@ -73,6 +86,11 @@ aws ecr get-login-password --region us-east-1 | docker login --username AWS --pa
 cd broker-service
 docker build -t YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/broker-service:latest .
 docker push YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/broker-service:latest
+
+# Build and push pricing calculator
+cd ../pricingcalc-mcp
+docker build -t YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/pricingcalc-mcp:latest .
+docker push YOUR-ACCOUNT-ID.dkr.ecr.us-east-1.amazonaws.com/pricingcalc-mcp:latest
 
 # Build and push MCP gateway
 cd ../mcp-gateway
@@ -132,6 +150,11 @@ curl -X POST http://YOUR-GATEWAY-ALB-URL/call-tool \
   -H "Content-Type: application/json" \
   -d '{"server": "iac", "tool": "iac_call_tool", "params": {"tool": "troubleshoot_cloudformation_deployment", "params": {"account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1", "stack_name": "sample-demo"}}}'
 
+# Test unified broker with pricing calculator
+curl -X POST http://YOUR-BROKER-ALB-URL/ask \
+  -H "Content-Type: application/json" \
+  -d '{"ask_text": "How much does my sample-demo stack cost per month?", "account_id": "YOUR-ACCOUNT-ID", "region": "us-east-1"}'
+
 # Test unified broker with deployment metrics
 curl -X POST http://YOUR-BROKER-ALB-URL/ask \
   -H "Content-Type: application/json" \
@@ -150,6 +173,11 @@ curl -X POST http://YOUR-BROKER-ALB-URL/ask \
 │   ├── broker.py            # FastAPI broker with unified MCP integration
 │   ├── Dockerfile           # Container configuration
 │   └── requirements.txt     # Python dependencies
+├── pricingcalc-mcp/         # AWS Pricing Calculator MCP server
+│   ├── app.py              # MCP server with 47 AWS services pricing
+│   ├── estimator.py        # CloudFormation template cost estimation
+│   ├── aws_resources/      # Individual service pricing implementations
+│   └── Dockerfile          # Container configuration
 ├── mcp-gateway/             # MCP protocol gateway
 │   ├── gateway.py           # FastAPI gateway routing MCP servers
 │   └── Dockerfile           # Container configuration
@@ -166,12 +194,22 @@ curl -X POST http://YOUR-BROKER-ALB-URL/ask \
 
 ### Broker Service
 - **🔄 Unified MCP Integration**: Single entry point routing to multiple MCP servers
+- **💰 AWS Pricing Integration**: Real-time cost estimation using AWS Pricing API
 - **📊 Deployment Metrics**: Real-time GitHub Actions deployment tracking
 - **🤖 Nova Pro Integration**: Uses `bedrock.converse()` API with agentic loops
-- **🧠 Intelligent Tool Routing**: Automatically routes tools based on prefix and capabilities
+- **🧠 Intelligent Tool Routing**: Routes `pricingcalc_*` to pricing server, `deploy_*` to metrics server
+- **⚡ Tool Caching**: Caches tools at startup for sub-second response times
 - **📝 Metadata Processing**: Extracts repository and run_id from GitHub Actions context
 - **🎯 Auto Run Selection**: Prioritizes RUNNING deployments for real-time tracking
-- **Performance**: ~4-5s response time with proper routing
+- **Performance**: ~1-2s response time with caching optimization
+
+### AWS Pricing Calculator
+- **💲 Real-Time Pricing**: Uses AWS Pricing API for accurate cost calculations
+- **📋 47 AWS Services**: EC2, RDS, Lambda, S3, ECS, ALB, CloudWatch, and more
+- **🆓 Free Tier Support**: Automatically applies AWS Free Tier allowances
+- **📊 CloudFormation Integration**: Estimates costs from YAML/JSON templates
+- **🔄 Cross-Account Support**: Price stacks in different AWS accounts
+- **📈 Monthly Estimates**: Detailed cost breakdowns per service
 
 ### MCP Gateway
 - **Server Routing**: Routes requests to appropriate MCP servers (ECS/IAC)

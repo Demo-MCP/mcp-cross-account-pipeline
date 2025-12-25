@@ -1,0 +1,13 @@
+Running aws cli command (using tool: aws):
+
+Service name: ecs
+Operation name: run-task
+Parameters: 
+- cluster: "mcp-cluster"
+- launch-type: "FARGATE"
+- task-definition: "github-runner"
+- overrides: {"containerOverrides":[{"command":["sh","-c","curl -X POST 'http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com/call-tool' -H 'Content-Type: application/json' -d '{\"server\": \"iac\", \"tool\": \"iac_call_tool\", \"params\": {\"tool\": \"troubleshoot_cloudformation_deployment\", \"params\": {\"stack_name\": \"test-stack\", \"account_id\": \"500330120558\", \"region\": \"us-east-1\"}}}'"],"name":"github-runner"}]}
+- network-configuration: {"awsvpcConfiguration":{"assignPublicIp":"ENABLED","securityGroups":["sg-0190ab5630f4e7309"],"subnets":["subnet-0d1a30fbc37023fea","subnet-0b296ab71b4c7e39d"]}}
+- count: 1
+Region: us-east-1
+Label: Test IAC MCP server with CloudFormation troubleshooting

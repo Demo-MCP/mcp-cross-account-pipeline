@@ -1,0 +1,175 @@
+import asyncio
+import json
+import os
+import subprocess
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Dict, Any, Optional
+import logging
+
+app = FastAPI(title="MCP Gateway", version="1.0.0")
+
+# Per-server state
+locks = {"ecs": asyncio.Lock(), "iac": asyncio.Lock()}
+req_ids = {"ecs": 0, "iac": 0}
+initialized = {"ecs": False, "iac": False}
+processes = {"ecs": None, "iac": None}
+stderr_tasks = {}
+
+class ListToolsRequest(BaseModel):
+    server: str
+
+class CallToolRequest(BaseModel):
+    server: str
+    tool: str
+    params: Dict[str, Any]
+
+def next_id(server: str) -> int:
+    req_ids[server] += 1
+    return req_ids[server]
+
+async def drain_stderr(server_type: str, process):
+    try:
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            print(f"[{server_type} stderr] {line.decode().rstrip()}")
+    except Exception as e:
+        print(f"[{server_type} stderr drain error] {e}")
+
+async def start_mcp_server(server_type: str):
+    if processes[server_type] is not None:
+        # Check if existing process is still alive
+        if processes[server_type].returncode is None:
+            return processes[server_type]
+    
+    env = os.environ.copy()
+    # Add both package roots to PYTHONPATH to ensure 'import awslabs' works
+    base_path = "/app"
+    env["PYTHONPATH"] = f"{base_path}/platform_aws_context:{base_path}/ecs-mcp-server:{base_path}/aws-iac-mcp-server/awslabs:" + env.get("PYTHONPATH", "")
+    
+    if server_type == "ecs":
+        cmd = ["python", "-m", "awslabs.ecs_mcp_server.main"]
+    elif server_type == "iac":
+        # Try using __main__.py entry point instead of server.py
+       # cmd = ["python", "-m", "awslabs.aws_iac_mcp_server"] 
+        cmd = ["python", f"{base_path}/aws-iac-mcp-server/awslabs/aws_iac_mcp_server/server.py"]
+    else:
+        raise ValueError(f"Unknown server type: {server_type}")
+ 
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env
+    )
+    
+    processes[server_type] = process
+    stderr_tasks[server_type] = asyncio.create_task(drain_stderr(server_type, process))
+    print(f"[{server_type}] Started MCP server with PID {process.pid}")
+    return process
+
+async def ensure_initialized(server_type: str):
+    if initialized[server_type] and processes[server_type] and processes[server_type].returncode is None:
+        return
+    
+    initialized[server_type] = False
+    process = await start_mcp_server(server_type)
+    
+    init_id = next_id(server_type)
+    init_request = {
+        "jsonrpc": "2.0",
+        "id": init_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "0.1.0",
+            "capabilities": {"roots": {}, "sampling": {}},
+            "clientInfo": {"name": "mcp-gateway", "version": "1.0.0"}
+        }
+    }
+    
+    process.stdin.write((json.dumps(init_request) + "\n").encode())
+    await process.stdin.drain()
+    
+    while True:
+        line = await process.stdout.readline()
+        if not line: raise Exception(f"[{server_type}] Process ended during init")
+        try:
+            response = json.loads(line.decode().strip())
+            if response.get("id") == init_id: break
+        except json.JSONDecodeError: continue
+    
+    process.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode())
+    await process.stdin.drain()
+    initialized[server_type] = True
+
+async def call_mcp_server(server_type: str, mcp_request: dict):
+    async with locks[server_type]:
+        await ensure_initialized(server_type)
+        process = processes[server_type]
+        request_id = mcp_request["id"]
+        
+        try:
+            process.stdin.write((json.dumps(mcp_request) + "\n").encode())
+            await process.stdin.drain()
+        except RuntimeError:
+            # Catch closed transport here to prevent crash
+            initialized[server_type] = False
+            raise HTTPException(status_code=500, detail="Server transport closed")
+        
+        while True:
+            line = await process.stdout.readline()
+            if not line: raise Exception(f"[{server_type}] Process ended during call")
+            try:
+                response = json.loads(line.decode().strip())
+                if response.get("id") == request_id: return response
+            except json.JSONDecodeError: continue
+
+@app.get("/health")
+async def health_check():
+    return {"ok": True}
+
+@app.post("/call-tool")
+async def call_tool(request: CallToolRequest):
+    # Handle wrapper tools (ecs_call_tool, iac_call_tool)
+    if request.tool in ["ecs_call_tool", "iac_call_tool"]:
+        # Extract actual tool name from params
+        actual_tool = request.params.get("tool")
+        if not actual_tool:
+            raise HTTPException(status_code=400, detail="Missing 'tool' parameter in wrapper call")
+        
+        # Flatten nested params structure - if params.params exists, use it directly
+        if "params" in request.params:
+            tool_params = request.params["params"]
+        else:
+            tool_params = request.params.copy()
+            tool_params.pop("tool", None)  # Remove the tool name from params
+        
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": next_id(request.server),
+            "method": "tools/call",
+            "params": {
+                "name": actual_tool,
+                "arguments": tool_params
+            }
+        }
+    else:
+        # Standard MCP tool call structure
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": next_id(request.server),
+            "method": "tools/call",
+            "params": {
+                "name": request.tool,
+                "arguments": request.params
+            }
+        }
+    
+    return await call_mcp_server(request.server, mcp_request)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
