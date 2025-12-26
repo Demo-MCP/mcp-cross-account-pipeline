@@ -1,6 +1,6 @@
 # MCP Cross-Account Pipeline
 
-End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support and Nova Pro AI integration.
+End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support, Nova Pro AI integration, and tier-based security.
 
 ## 🏗️ Architecture
 
@@ -10,14 +10,38 @@ GitHub PR Comment → GitHub Actions → Broker Service → MCP Gateway → MCP 
 
 ## ✨ Features
 
-* **🔄 Unified MCP Broker**: Single entry point for all deployment tools with intelligent routing
+* **🔄 Tier-Based Broker**: Secure multi-tier access control with `/ask` (user) and `/admin` (privileged) endpoints
+* **🔒 Security-First Design**: Fail-closed security with tool execution gating and explicit allowlists
 * **📊 Deployment Metrics Integration**: Real-time GitHub Actions deployment tracking and analysis
+* **🔍 PR Analysis Tools**: Comprehensive pull request analysis with security scanning (admin-only)
 * **🤖 Nova Pro Integration**: Advanced AI tool calling with agentic loops
 * **🔀 Cross-Account Support**: Dynamic role assumption per API call
 * **🌐 MCP Protocol**: Standardized AI tool integration with gateway routing
 * **☁️ ECS Fargate**: Serverless container execution
 * **🔗 GitHub Integration**: PR comment triggers and responses
-* **🏗️ Multi-Service**: ECS, Infrastructure-as-Code, and deployment analysis
+* **🏗️ Multi-Service**: ECS, Infrastructure-as-Code, deployment analysis, and pricing
+
+### 🆕 New: Tier-Based Security System
+
+The broker now implements comprehensive tier-based access control:
+
+**👤 User Tier (`/ask` endpoint):**
+- **9 Tools Available**: Basic infrastructure and deployment tools
+- **Safe Operations**: Read-only access to ECS, CloudFormation, deployments
+- **Pricing Analysis**: Cost estimation for approved resources
+- **No Sensitive Access**: Cannot access PR analysis or stack pricing
+
+**🔐 Admin Tier (`/admin` endpoint):**
+- **12 Tools Available**: All user tools + sensitive operations
+- **PR Analysis**: Full pull request diff analysis and security scanning
+- **Stack Pricing**: Cost estimation for any CloudFormation stack
+- **Complete Access**: All infrastructure analysis capabilities
+
+**Security Features:**
+- **Fail-Closed Design**: Tools not explicitly allowed are blocked
+- **Tool Execution Gating**: Double validation at advertisement and execution
+- **Metadata-Driven**: Uses GitHub Actions context for secure parameter mapping
+- **Audit Logging**: Tracks all tool calls and denied attempts
 
 ### 🆕 New: AWS Pricing Calculator Integration
 
@@ -35,13 +59,25 @@ The system now includes comprehensive AWS cost estimation capabilities:
 
 The broker service now provides a single, intelligent entry point for all deployment tools:
 
-- **Dynamic Tool Discovery**: Automatically discovers deployment metrics and pricing tools from MCP servers
-- **Intelligent Routing**: Routes `deploy_*` tools to metrics server, `pricingcalc_*` tools to pricing server
-- **Tool Caching**: Caches tools at startup for consistent sub-second response times
+- **Dynamic Tool Discovery**: Automatically discovers tools from PR Context, deployment metrics, and pricing MCP servers
+- **Intelligent Routing**: Routes `pr_*` tools to PR Context, `deploy_*` tools to metrics, `pricingcalc_*` tools to pricing
+- **Tool Caching**: Caches 12 tools at startup for consistent sub-second response times
 - **Metadata Integration**: Uses GitHub Actions metadata for repository and run_id when available
+- **Parameter Mapping**: Automatically maps Bedrock parameters to MCP service requirements
 - **Auto Run Selection**: Automatically selects RUNNING deployments when no run_id provided
 - **Text Response Handling**: Properly formats text responses for Bedrock compatibility
 - **Repository Validation**: Validates repository format and prefers metadata over AI guesses
+
+### 🆕 New: PR Analysis & Security Scanning
+
+Comprehensive pull request analysis with security-first approach:
+
+- **Diff Analysis**: Complete PR diff retrieval and parsing
+- **Security Scanning**: Checkov integration for infrastructure security analysis
+- **IAC Resource Detection**: Identifies CloudFormation, Terraform, and other IAC changes
+- **Cost Impact Analysis**: Estimates pricing impact of infrastructure changes
+- **Admin-Only Access**: Sensitive code analysis restricted to privileged users
+- **GitHub Integration**: Seamless integration with GitHub Actions workflows
 
 ## 🚀 Quick Deploy from Scratch
 
@@ -62,6 +98,57 @@ Update the following files with your AWS account details:
   "executionRoleArn": "arn:aws:iam::YOUR-ACCOUNT-ID:role/ecsTaskExecutionRole"
 }
 ```
+
+## 🔐 Security & Access Control
+
+### Tier-Based Access
+
+The system implements two access tiers for security:
+
+**👤 User Tier (`/ask` endpoint):**
+```bash
+# Safe for general use - 9 tools available
+curl -X POST http://your-broker-url/ask \
+  -H "Content-Type: application/json" \
+  -d '{"ask_text": "List ECS clusters"}'
+```
+
+**🔐 Admin Tier (`/admin` endpoint):**
+```bash
+# Privileged access - 12 tools available (includes PR analysis)
+curl -X POST http://your-broker-url/admin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ask_text": "Analyze pull request #9 for security issues",
+    "metadata": {
+      "repository": "org/repo",
+      "pr_number": 9,
+      "actor": "username",
+      "run_id": "12345"
+    }
+  }'
+```
+
+### Tool Categories
+
+| Category | User Tier | Admin Tier | Description |
+|----------|-----------|------------|-------------|
+| **ECS Tools** | ✅ | ✅ | List clusters, describe services |
+| **IAC Tools** | ✅ | ✅ | CloudFormation stack analysis |
+| **Deploy Tools** | ✅ | ✅ | GitHub Actions deployment metrics |
+| **Basic Pricing** | ✅ | ✅ | Cost estimation from templates |
+| **PR Analysis** | ❌ | ✅ | Pull request diff and security scanning |
+| **Stack Pricing** | ❌ | ✅ | Cost estimation for any CloudFormation stack |
+
+### GitHub Actions Integration
+
+Use the `/analyze` command in PR comments for admin-level analysis:
+
+```
+/analyze Get security analysis and cost impact for this PR
+```
+
+This triggers the admin workflow with proper metadata context.
 
 **scripts/broker-task.json**
 ```json
