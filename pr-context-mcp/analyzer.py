@@ -12,16 +12,20 @@ from rules.iam import IAMRules
 from rules.networking import NetworkingRules
 from rules.secrets import SecretsRules
 from rules.ops import OperationalRules
+from cfn_analyzer import CloudFormationAnalyzer
+from checkov_scanner import CheckovScanner
 
 logger = logging.getLogger(__name__)
 
 class PRAnalyzer:
-    def __init__(self):
+    def __init__(self, infrastructure_folder: str = "infrastructure"):
         self.iac_security = IaCSecurityRules()
         self.iam_rules = IAMRules()
         self.networking_rules = NetworkingRules()
         self.secrets_rules = SecretsRules()
         self.ops_rules = OperationalRules()
+        self.cfn_analyzer = CloudFormationAnalyzer(infrastructure_folder)
+        self.checkov_scanner = CheckovScanner()
         self.iam_rules = IAMRules()
         self.networking_rules = NetworkingRules()
         self.secrets_rules = SecretsRules()
@@ -81,7 +85,7 @@ class PRAnalyzer:
         findings = findings[:max_findings]
         
         # Generate summary and approval considerations
-        summary = self._generate_summary(changed_files, findings, has_iac_files)
+        summary = self._generate_summary(changed_files, findings, has_iac_files, diff, run_security_analysis)
         approval_considerations = self._generate_approval_considerations(findings)
         
         # Calculate stats
@@ -140,13 +144,15 @@ class PRAnalyzer:
         weights = {"critical": 4, "high": 3, "medium": 2, "low": 1}
         return weights.get(severity.lower(), 0)
     
-    def _generate_summary(self, changed_files: List[Dict], findings: List[Dict], has_iac_files: bool) -> str:
+    def _generate_summary(self, changed_files: List[Dict], findings: List[Dict], has_iac_files: bool, diff: str = "", run_security_analysis: bool = True) -> str:
         """Generate human-readable summary with file details"""
         file_count = len(changed_files)
         finding_count = len(findings)
         
         # Generate file-by-file summary
         file_summaries = []
+        infrastructure_analysis = []
+        
         for file_info in changed_files:
             path = file_info.get('path', 'unknown')
             status = file_info.get('status', 'unknown')
@@ -166,6 +172,26 @@ class PRAnalyzer:
                 summary = f"🔄 **{path}** - {status.title()} {file_type}"
             
             file_summaries.append(summary)
+            
+            # Analyze CloudFormation templates
+            if self.cfn_analyzer._is_cfn_template(path):
+                try:
+                    cfn_analysis = self.cfn_analyzer.analyze_template_changes(path, status, diff)
+                    if cfn_analysis and "error" not in cfn_analysis:
+                        card = self.cfn_analyzer.format_analysis_card(cfn_analysis)
+                        infrastructure_analysis.append(card)
+                        
+                        # Run Checkov security scan on CloudFormation templates
+                        if run_security_analysis:
+                            template_content = self.cfn_analyzer._extract_template_from_diff(diff, path)
+                            if template_content:
+                                checkov_results = self.checkov_scanner.scan_template(template_content, path)
+                                security_card = self.checkov_scanner.format_security_card(checkov_results, path)
+                                infrastructure_analysis.append(security_card)
+                    else:
+                        infrastructure_analysis.append(f"⚠️ **{path}**: CloudFormation analysis failed - could not parse template")
+                except Exception as e:
+                    infrastructure_analysis.append(f"❌ **{path}**: CloudFormation analysis error - {str(e)}")
         
         # Build main summary
         summary_parts = [
@@ -176,6 +202,11 @@ class PRAnalyzer:
         if file_summaries:
             summary_parts.append("\\n\\n**File Changes:**")
             summary_parts.extend(file_summaries)
+        
+        # Add infrastructure deployment analysis
+        if infrastructure_analysis:
+            summary_parts.append("\\n\\n**Infrastructure Deployment Analysis:**")
+            summary_parts.extend(infrastructure_analysis)
         
         # Add security analysis note
         if has_iac_files:

@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'PR Context MCP Service - ECS service with ALB path routing'
+
+Parameters:
+  ImageUri:
+    Type: String
+    Default: '500330120558.dkr.ecr.us-east-1.amazonaws.com/pr-context-mcp:latest'
+    Description: ECR image URI for PR Context MCP service
+  
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: GitHub Personal Access Token for API access
+  
+  ALBListenerArn:
+    Type: String
+    Default: arn:aws:elasticloadbalancing:us-east-1:500330120558:listener/app/mcp-internal-alb/ec8460e17c126e54/49af6a3707a1b926
+    Description: ARN of the existing MCP ALB listener
+
+Resources:
+  # Secrets Manager Secret for GitHub Token
+  GitHubTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pr-context-mcp/github-token
+      Description: GitHub Personal Access Token for PR Context MCP service
+      SecretString: !Ref GitHubToken
+
+  # ECR Repository
+  PRContextECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: pr-context-mcp
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # CloudWatch Log Group
+  PRContextLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/pr-context-mcp
+      RetentionInDays: 7
+
+  # IAM Policy for ECS Task Role to access Secrets Manager
+  PRContextTaskRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: PRContextSecretsManagerAccess
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: 
+              - !Ref GitHubTokenSecret
+              - "arn:aws:secretsmanager:us-east-1:500330120558:secret:github-pat-token*"
+      Roles:
+        - McpServerTaskRole
+
+  # ECS Task Definition
+  PRContextTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: pr-context-mcp
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole'
+      TaskRoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/McpServerTaskRole'
+      ContainerDefinitions:
+        - Name: pr-context-mcp
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: ALLOWLIST_REPOS
+              Value: 'Demo-MCP/*'
+            - Name: GITHUB_AUTH_METHOD
+              Value: 'pat'
+            - Name: GITHUB_PAT_SECRET
+              Value: !Ref GitHubTokenSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref PRContextLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # Target Group for PR Context service
+  PRContextTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: pr-context-targets
+      Port: 8080
+      Protocol: HTTP
+      VpcId: vpc-09935a80be37148d0
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+
+  # ALB Listener Rule for /pr path
+  PRContextListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListenerArn
+      Priority: 400
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/pr*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref PRContextTargetGroup
+
+  # ECS Service
+  PRContextService:
+    Type: AWS::ECS::Service
+    DependsOn: PRContextListenerRule
+    Properties:
+      ServiceName: pr-context-mcp
+      Cluster: mcp-cluster
+      TaskDefinition: !Ref PRContextTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - sg-0190ab5630f4e7309
+          Subnets:
+            - subnet-0d1a30fbc37023fea
+            - subnet-0b296ab71b4c7e39d
+      LoadBalancers:
+        - TargetGroupArn: !Ref PRContextTargetGroup
+          ContainerName: pr-context-mcp
+          ContainerPort: 8080
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
+Outputs:
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !Ref PRContextService
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceName'
+  
+  TargetGroupArn:
+    Description: ARN of the target group
+    Value: !Ref PRContextTargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetGroupArn'
+  
+  ECRRepositoryUri:
+    Description: ECR repository URI
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${PRContextECRRepository}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ECRRepositoryUri'
+  
+  ServiceEndpoint:
+    Description: Service endpoint URL
+    Value: !Sub 'http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com/pr'
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceEndpoint'
