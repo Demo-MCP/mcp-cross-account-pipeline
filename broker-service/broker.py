@@ -6,6 +6,7 @@ import boto3
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, List
+from tool_policy import is_tool_allowed
 
 app = FastAPI(title="MCP Broker Service")
 
@@ -18,12 +19,33 @@ def initialize_tools():
     _cached_tools = get_available_tools()
     print(f"[STARTUP] Cached {len(_cached_tools)} tools")
 
+def get_filtered_tools(tier: str) -> List[Dict]:
+    """Get tools filtered by tier policy"""
+    if not _cached_tools:
+        initialize_tools()
+    
+    filtered_tools = []
+    for tool in _cached_tools:
+        tool_name = tool["toolSpec"]["name"]
+        if is_tool_allowed(tool_name, tier):
+            filtered_tools.append(tool)
+    
+    print(f"[TOOLS] {tier} tier: {len(filtered_tools)}/{len(_cached_tools)} tools allowed")
+    return filtered_tools
+
 @app.on_event("startup")
 async def startup_event():
     initialize_tools()
 
 class AskRequest(BaseModel):
     ask_text: str  # Changed from question to ask_text for workflow alignment
+    shim_url: str = "http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com"
+    account_id: str = "500330120558"
+    region: str = "us-east-1"
+    metadata: Dict[str, Any] = {}
+
+class AdminRequest(BaseModel):
+    ask_text: str
     shim_url: str = "http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com"
     account_id: str = "500330120558"
     region: str = "us-east-1"
@@ -42,14 +64,46 @@ async def list_tools():
 async def ask_question(request: AskRequest):
     try:
         print(f"[ASK] Question: {request.ask_text}")
-        result = call_bedrock(request.ask_text, _cached_tools, request.shim_url, request.account_id, request.region, request.metadata)
-        print(f"[ASK] Response: {result}")
-        return {"answer": result}  # Changed from response to answer for workflow alignment
+        return await handle_request(request, tier="user")
     except Exception as e:
         print(f"Error in /ask: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, region: str, metadata: Dict[str, Any]) -> str:
+@app.post("/admin")
+async def admin_question(request: AdminRequest):
+    try:
+        print(f"[ADMIN] Question: {request.ask_text}")
+        return await handle_request(request, tier="admin")
+    except Exception as e:
+        print(f"Error in /admin: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def handle_request(request, tier: str):
+    """Shared handler for both /ask and /admin endpoints"""
+    import time
+    start_time = time.time()
+    
+    # A) Filter tools by tier before sending to model
+    filtered_tools = get_filtered_tools(tier)
+    tools_called = []
+    denied_tool_calls = []
+    
+    result = call_bedrock(request.ask_text, filtered_tools, request.shim_url, request.account_id, request.region, request.metadata, tier, tools_called, denied_tool_calls)
+    
+    total_ms = int((time.time() - start_time) * 1000)
+    
+    return {
+        "answer": result,
+        "debug": {
+            "tier": tier,
+            "tools_advertised_count": len(filtered_tools),
+            "tools_called": tools_called,
+            "denied_tool_calls": denied_tool_calls,
+            "total_ms": total_ms
+        }
+    }
+
+def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, region: str, metadata: Dict[str, Any], tier: str, tools_called: List[str], denied_tool_calls: List[str]) -> str:
     bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
     
     # System prompt is passed separately in Converse API
@@ -100,8 +154,29 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
                 print(f"Executing tool: {tool_name}")
                 print(f"[BEDROCK] Tool input: {tool_input}")
 
-                # Call your shim/Fargate backend
-                if tool_name.startswith('pricingcalc_'):
+                # B) Enforce tool execution gating - fail closed
+                if not is_tool_allowed(tool_name, tier):
+                    error_msg = f"Tool '{tool_name}' not allowed for this endpoint"
+                    print(f"[SECURITY] {error_msg}")
+                    denied_tool_calls.append(tool_name)
+                    
+                    tool_results.append({
+                        "toolResult": {
+                            "toolUseId": tool_use['toolUseId'],
+                            "content": [{"json": {"error": error_msg}}],
+                            "status": "error"
+                        }
+                    })
+                    continue
+                
+                # Tool is allowed, track it and execute
+                tools_called.append(tool_name)
+
+                # Route to appropriate MCP backend
+                if tool_name.startswith('pr_'):
+                    # Route PR tools to PR Context MCP
+                    result_data = call_mcp_tool(f"{shim_url}/pr", tool_name, tool_input, metadata)
+                elif tool_name.startswith('pricingcalc_'):
                     # Route pricing calculator tools to pricing MCP server
                     result_data = call_pricing_tool(tool_name, tool_input)
                 elif tool_name.startswith('deploy_'):
@@ -256,6 +331,51 @@ def call_metrics_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, A
         print(f"[METRICS] Error calling {tool_name}: {e}")
         return {"error": str(e)}
 
+def call_mcp_tool(mcp_url: str, tool_name: str, tool_input: Dict[str, Any], metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Call MCP service tool directly"""
+    try:
+        print(f"[MCP] Calling {mcp_url} tool {tool_name}")
+        
+        # Map parameters for PR tools
+        if tool_name.startswith('pr_') and metadata:
+            mapped_input = {
+                'repo': metadata.get('repository', 'Demo-MCP/mcp-cross-account-pipeline'),
+                'pr_number': metadata.get('pr_number', tool_input.get('pr_number')),
+                'actor': metadata.get('actor', 'admin'),
+                'run_id': metadata.get('run_id', '12345')
+            }
+            # Add any additional parameters from tool_input
+            for key, value in tool_input.items():
+                if key not in mapped_input:
+                    mapped_input[key] = value
+            tool_input = mapped_input
+        
+        response = requests.post(
+            mcp_url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": tool_input
+                }
+            },
+            timeout=120
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        if "error" in result:
+            return {"error": result["error"]["message"]}
+        
+        return result.get("result", {})
+        
+    except requests.exceptions.Timeout:
+        return {"error": f"MCP tool {tool_name} timed out after 120 seconds"}
+    except Exception as e:
+        return {"error": f"MCP tool {tool_name} failed: {str(e)}"}
+
 def call_pricing_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
     """Call pricing calculator MCP server directly via ALB"""
     try:
@@ -394,8 +514,29 @@ def get_available_tools() -> list:
                 print(f"[TOOLS] Added {len(result['result']['tools'])} pricing calculator tools")
     except Exception as e:
         print(f"[TOOLS] Failed to fetch pricing calculator tools: {e}")
+    
+    # Dynamically fetch PR tools
+    try:
+        response = requests.post(
+            f"{alb_url}/pr",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"Content-Type": "application/json"},
+            timeout=5
+        )
+        if response.status_code == 200:
+            result = response.json()
+            if 'result' in result and 'tools' in result['result']:
+                for tool in result['result']['tools']:
+                    tools.append({
+                        "toolSpec": {
+                            "name": tool['name'],
+                            "description": tool['description'],
+                            "inputSchema": {"json": tool['inputSchema']}
+                        }
+                    })
+                print(f"[TOOLS] Added {len(result['result']['tools'])} PR tools")
     except Exception as e:
-        print(f"[TOOLS] Error fetching metrics tools: {e}")
+        print(f"[TOOLS] Failed to fetch PR tools: {e}")
     
     return tools
 

@@ -1,0 +1,12 @@
+Running aws cli command (using tool: aws):
+
+Service name: ecs
+Operation name: run-task
+Parameters: 
+- networkConfiguration: {"awsvpcConfiguration":{"assignPublicIp":"ENABLED","securityGroups":["sg-0190ab5630f4e7309"],"subnets":["subnet-0d1a30fbc37023fea","subnet-0b296ab71b4c7e39d"]}}
+- overrides: {"containerOverrides":[{"command":["python3","-c","import requests,json;url='http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com';print('🧪 Broker Test Results');print('='*40);ask=requests.post(f'{url}/ask',json={'ask_text':'What tools?'},timeout=30).json();admin=requests.post(f'{url}/admin',json={'ask_text':'What tools?'},timeout=30).json();print(f'/ask: {ask[\"debug\"][\"tier\"]} tier, {ask[\"debug\"][\"tools_advertised_count\"]} tools');print(f'/admin: {admin[\"debug\"][\"tier\"]} tier, {admin[\"debug\"][\"tools_advertised_count\"]} tools');print(f'Difference: {admin[\"debug\"][\"tools_advertised_count\"]-ask[\"debug\"][\"tools_advertised_count\"]} additional admin tools');print('✅ Test completed!')"],"name":"mcp-gateway"}]}
+- taskDefinition: "mcp-gateway"
+- launchType: "FARGATE"
+- cluster: "mcp-cluster"
+Region: us-east-1
+Label: Run simple broker test with immediate output
