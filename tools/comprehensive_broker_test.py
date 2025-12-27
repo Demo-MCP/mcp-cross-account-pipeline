@@ -11,12 +11,17 @@ from typing import Dict, List, Any
 BROKER_URL = "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com"
 TIMEOUT = 60
 
-# Test metadata for PR tools
+# Optional RunId 20490873394
+# Test metadata for all tools
 TEST_METADATA = {
     'repository': 'Demo-MCP/mcp-cross-account-pipeline',
+    'repo': 'Demo-MCP/mcp-cross-account-pipeline',
     'pr_number': 9,
     'actor': 'admin',
-    'run_id': '20490873394'
+    'run_id': '20490873394',
+    'account_id': '500330120558',
+    'region': 'us-east-1',
+    'stack_name': 'pr-context-mcp'
 }
 
 # Tool test cases with expected behavior
@@ -62,7 +67,8 @@ TOOL_TESTS = {
         'admin_allowed': True,
         'user_allowed': True,
         'test_payload': {
-            'ask_text': 'Get pricing estimate for pr-context-mcp CloudFormation stack'
+            'ask_text': 'Get pricing estimate for pr-context-mcp CloudFormation stack',
+            'metadata': TEST_METADATA
         }
     },
     
@@ -71,7 +77,8 @@ TOOL_TESTS = {
         'admin_allowed': True,
         'user_allowed': True,
         'test_payload': {
-            'ask_text': 'Check status of pr-context-mcp CloudFormation stack'
+            'ask_text': 'Check status of pr-context-mcp CloudFormation stack',
+            'metadata': TEST_METADATA
         }
     },
     
@@ -80,7 +87,8 @@ TOOL_TESTS = {
         'admin_allowed': True,
         'user_allowed': True,
         'test_payload': {
-            'ask_text': 'List ECS clusters'
+            'ask_text': 'List ECS clusters',
+            'metadata': TEST_METADATA
         }
     }
 }

@@ -69,49 +69,103 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
     # Tool-specific parameter resolution
     if tool_name.startswith("pr_"):
         # PR tools require repo, pr_number, actor, run_id
-        resolved["repo"] = metadata.get("repository")
+        resolved["repo"] = metadata.get("repository") or metadata.get("repo")
         resolved["pr_number"] = metadata.get("pr_number")
         resolved["actor"] = metadata.get("actor") 
         resolved["run_id"] = metadata.get("run_id")
         
-        # pr_summarize also accepts diff parameter
+        # pr_summarize also requires diff and changed_files
         if tool_name == "pr_summarize":
             resolved["diff"] = metadata.get("diff")
+            resolved["changed_files"] = metadata.get("changed_files", [])
+        
+        # Optional parameters
+        resolved["options"] = metadata.get("options", {})
         
         # Fallback: extract PR number from prompt if missing
         if not resolved["pr_number"]:
             resolved["pr_number"] = extract_pr_number(ctx.get("prompt", ""))
             
-        # Check for missing required params (diff is optional for pr_summarize)
+        # Check for missing required params
         required_params = ["repo", "pr_number", "actor", "run_id"]
+        if tool_name == "pr_summarize":
+            required_params.extend(["diff", "changed_files"])
+            
         for param in required_params:
             if not resolved.get(param):
                 missing.append(param)
                 
     elif tool_name.startswith("deploy_"):
-        # Deploy tools need repository and optionally run_id
-        resolved["repository"] = metadata.get("repository")
-        resolved["run_id"] = metadata.get("run_id")
+        # Deploy tools have different parameter requirements
+        if tool_name in ["deploy_find_latest", "deploy_find_active"]:
+            # These tools need repository parameter
+            resolved["repository"] = metadata.get("repository") or metadata.get("repo")
+            if not resolved["repository"]:
+                missing.append("repository")
         
-        if not resolved["repository"]:
-            missing.append("repository")
-            
-    elif tool_name.startswith("pricingcalc_"):
-        # Pricing tools may need stack_name or template
-        if "stack" in tool_name:
-            resolved["stack_name"] = metadata.get("stack_name")
-            if not resolved["stack_name"]:
-                resolved["stack_name"] = extract_stack_name(ctx.get("prompt", ""))
+        if tool_name in ["deploy_get_run", "deploy_get_steps", "deploy_get_summary"]:
+            # These tools need run_id parameter
+            resolved["run_id"] = metadata.get("run_id")
+            if not resolved["run_id"]:
+                missing.append("run_id")
+        
+        # Optional parameters
+        if tool_name in ["deploy_get_steps"]:
+            resolved["limit"] = metadata.get("limit", 200)
+        elif tool_name in ["deploy_find_latest", "deploy_find_active"]:
+            resolved["limit"] = metadata.get("limit", 10)
+                
+    elif tool_name in ["ecs_call_tool", "iac_call_tool"]:
+        # ECS and IAC tools need account_id and region (already set above)
+        # ECS tools may need api_operation and api_params from model args
+        if tool_name == "ecs_call_tool":
+            # Map common lowercase operations to proper AWS API names
+            api_op = model_args.get("api_operation", "ListClusters")
+            operation_map = {
+                "list_clusters": "ListClusters",
+                "describe_clusters": "DescribeClusters", 
+                "list_services": "ListServices",
+                "describe_services": "DescribeServices",
+                "list_tasks": "ListTasks",
+                "describe_tasks": "DescribeTasks"
+            }
+            resolved["api_operation"] = operation_map.get(api_op.lower(), api_op) if isinstance(api_op, str) else "ListClusters"
+            resolved["api_params"] = model_args.get("api_params", {})
+        elif tool_name == "iac_call_tool":
+            resolved["stack_name"] = model_args.get("stack_name") or extract_stack_name(ctx.get("prompt", ""))
             if not resolved["stack_name"]:
                 missing.append("stack_name")
-        
-        resolved["template_body"] = metadata.get("template_body")
-        resolved["template_url"] = metadata.get("template_url")
+                
+    elif tool_name.startswith("pricingcalc_"):
+        # Pricing tools have different parameter requirements
+        if tool_name == "pricingcalc_estimate_from_cfn":
+            resolved["template_content"] = metadata.get("template_content") or metadata.get("template")
+            resolved["region"] = metadata.get("region", "us-east-1")
+            if not resolved["template_content"]:
+                missing.append("template_content")
+                
+        elif tool_name == "pricingcalc_estimate_with_custom_specs":
+            resolved["template_content"] = metadata.get("template_content") or metadata.get("template")
+            resolved["custom_specs"] = metadata.get("custom_specs")
+            resolved["region"] = metadata.get("region", "us-east-1")
+            if not resolved["template_content"]:
+                missing.append("template_content")
+            if not resolved["custom_specs"]:
+                missing.append("custom_specs")
+                
+        elif tool_name == "pricingcalc_estimate_from_stack":
+            resolved["stack_name"] = metadata.get("stack_name")
+            resolved["account_id"] = metadata.get("account_id") or aws_ctx.get("account_id")
+            resolved["region"] = metadata.get("region") or aws_ctx.get("region", "us-east-1")
+            if not resolved["stack_name"]:
+                missing.append("stack_name")
+            if not resolved["account_id"]:
+                missing.append("account_id")
     
     if missing:
         raise MissingParamsError(missing, tool_name)
     
-    # Remove None values
+    return resolved
     return {k: v for k, v in resolved.items() if v is not None}
 
 class MissingParamsError(Exception):

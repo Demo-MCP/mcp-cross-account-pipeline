@@ -101,7 +101,7 @@ def check_intent_guards(ctx: dict) -> Optional[dict]:
     # Deployment intent guards  
     elif intent == "deployment":
         # Ensure repository is available for deployment queries
-        repository = metadata.get("repository")
+        repository = metadata.get("repository") or metadata.get("repo")
         if not repository:
             return {
                 "error_type": "MISSING_PARAMS", 

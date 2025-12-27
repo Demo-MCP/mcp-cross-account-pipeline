@@ -106,36 +106,50 @@ def call_mcp_tool(service: str, tool_name: str, args: dict, ctx: dict) -> dict:
         return {"error": f"MCP call failed: {str(e)}"}
 
 def call_legacy_gateway(tool_name: str, args: dict, ctx: dict) -> dict:
-    """Call legacy gateway for ECS/IAC tools"""
+    """Call legacy gateway for ECS/IAC tools using /call-tool endpoint"""
     aws_ctx = ctx.get("aws", {})
     shim_url = aws_ctx.get("shim_url", "http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com")
     
-    # Map tool to gateway endpoint
-    tool_mapping = {
-        "ecs_call_tool": "ecs",
-        "iac_call_tool": "iac"
-    }
-    
-    endpoint = tool_mapping.get(tool_name)
-    if not endpoint:
-        return {"error": f"Unknown legacy tool: {tool_name}"}
-    
-    # Prepare gateway payload
-    payload = {
-        "tool": args.get("tool", endpoint),
-        "params": {
-            "account_id": args.get("account_id"),
-            "region": args.get("region"),
-            **{k: v for k, v in args.items() if k not in ["account_id", "region", "tool"]}
-        }
-    }
-    
     try:
-        response = requests.post(f"{shim_url}/call-tool", json=payload, timeout=60)
+        if tool_name == "ecs_call_tool":
+            payload = {
+                "server": "ecs",
+                "tool": "ecs_resource_management", 
+                "params": {
+                    "api_operation": args.get("api_operation", "ListClusters"),
+                    "api_params": args.get("api_params", {}),
+                    "account_id": args.get("account_id", "500330120558"),
+                    "region": args.get("region", "us-east-1")
+                }
+            }
+        elif tool_name == "iac_call_tool":
+            payload = {
+                "server": "iac",
+                "tool": "troubleshoot_cloudformation_deployment",
+                "params": {
+                    "stack_name": args.get("stack_name", ""),
+                    "account_id": args.get("account_id", "500330120558"),
+                    "region": args.get("region", "us-east-1")
+                }
+            }
+        else:
+            return {"error": f"Unknown legacy tool: {tool_name}"}
+        
+        response = requests.post(f"{shim_url}/call-tool", json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+        
+    except Exception as e:
+        return {"error": f"Legacy gateway call failed: {str(e)}"}
+
+    try:
+        response = requests.post(f"{shim_url}/", json=payload, timeout=60)
         response.raise_for_status()
         result = response.json()
         
         return {"result": result}
         
+    except Exception as e:
+        return {"error": f"Legacy gateway call failed: {str(e)}"}
     except Exception as e:
         return {"error": f"Legacy gateway call failed: {str(e)}"}

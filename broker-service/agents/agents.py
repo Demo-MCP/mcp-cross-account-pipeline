@@ -16,25 +16,128 @@ _tool_context = {}
 
 # Define actual tool functions that Strands can execute
 
+@tool(name="ecs_call_tool", description="Call ECS tools")
+def ecs_call_tool(tool: str = "ecs_resource_management", params: dict = None, **kwargs) -> str:
+    """Call ECS tools with proper parameter structure
+    
+    Args:
+        tool: Should be 'ecs_resource_management'
+        params: Dictionary containing api_operation, api_params, account_id, region
+    """
+    if params is None:
+        params = {"api_operation": "ListClusters", "api_params": {}, "account_id": "500330120558", "region": "us-east-1"}
+    
+    # Extract the parameters for our internal execute_tool call
+    final_params = {
+        "api_operation": params.get("api_operation", "ListClusters"),
+        "api_params": params.get("api_params", {}),
+        "account_id": params.get("account_id", "500330120558"),
+        "region": params.get("region", "us-east-1")
+    }
+    
+    with measure_execution("ecs_call_tool", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("ecs_call_tool", final_params, _tool_context)
+    return format_tool_result("ecs_call_tool", result)
+
+@tool(name="iac_call_tool", description="Query infrastructure as code templates")
+def iac_call_tool(tool: str = "troubleshoot_cloudformation_deployment", params: dict = None, **kwargs) -> str:
+    """Query infrastructure as code templates
+    
+    Args:
+        tool: Should be 'troubleshoot_cloudformation_deployment'
+        params: Dictionary containing stack_name, account_id, region
+    """
+    if params is None:
+        params = {"stack_name": "", "account_id": "500330120558", "region": "us-east-1"}
+    
+    # Extract the parameters for our internal execute_tool call
+    final_params = {
+        "stack_name": params.get("stack_name", ""),
+        "account_id": params.get("account_id", "500330120558"),
+        "region": params.get("region", "us-east-1")
+    }
+    
+    with measure_execution("iac_call_tool", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("iac_call_tool", final_params, _tool_context)
+    return format_tool_result("iac_call_tool", result)
+
+@tool(name="deploy_get_run", description="Get deployment run details")
+def deploy_get_run_tool(run_id: str) -> str:
+    """Get deployment run details"""
+    with measure_execution("deploy_get_run", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_get_run", {"run_id": run_id}, _tool_context)
+    return format_tool_result("deploy_get_run", result)
+
+@tool(name="deploy_get_steps", description="Get deployment steps")
+def deploy_get_steps_tool(run_id: str, limit: int = 200) -> str:
+    """Get deployment steps"""
+    with measure_execution("deploy_get_steps", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_get_steps", {"run_id": run_id, "limit": limit}, _tool_context)
+    return format_tool_result("deploy_get_steps", result)
+
+@tool(name="deploy_find_latest", description="Find latest deployment")
+def deploy_find_latest_tool(repository: str, limit: int = 10) -> str:
+    """Find latest deployment"""
+    with measure_execution("deploy_find_latest", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_find_latest", {"repository": repository, "limit": limit}, _tool_context)
+    return format_tool_result("deploy_find_latest", result)
+
+@tool(name="deploy_find_active", description="Find active deployments")
+def deploy_find_active_tool(repository: str = "", limit: int = 10) -> str:
+    """Find active deployments"""
+    with measure_execution("deploy_find_active", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_find_active", {"repository": repository, "limit": limit}, _tool_context)
+    return format_tool_result("deploy_find_active", result)
+
+@tool(name="deploy_get_summary", description="Get deployment summary")
+def deploy_get_summary_tool(run_id: str) -> str:
+    """Get deployment summary"""
+    with measure_execution("deploy_get_summary", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_get_summary", {"run_id": run_id}, _tool_context)
+    return format_tool_result("deploy_get_summary", result)
+
+@tool(name="pricingcalc_estimate_from_cfn", description="Estimate pricing from CloudFormation template")
+def pricingcalc_estimate_from_cfn_tool(template_content: str, region: str = "us-east-1") -> str:
+    """Estimate pricing from CloudFormation template"""
+    params = {"template_content": template_content, "region": region}
+    with measure_execution("pricingcalc_estimate_from_cfn", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("pricingcalc_estimate_from_cfn", params, _tool_context)
+    return format_tool_result("pricingcalc_estimate_from_cfn", result)
+
+@tool(name="pricingcalc_estimate_with_custom_specs", description="Estimate pricing with custom specifications")
+def pricingcalc_estimate_with_custom_specs_tool(template_content: str, custom_specs: str, region: str = "us-east-1") -> str:
+    """Estimate pricing with custom specifications"""
+    params = {"template_content": template_content, "custom_specs": custom_specs, "region": region}
+    with measure_execution("pricingcalc_estimate_with_custom_specs", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("pricingcalc_estimate_with_custom_specs", params, _tool_context)
+    return format_tool_result("pricingcalc_estimate_with_custom_specs", result)
+
+@tool(name="pricingcalc_estimate_from_stack", description="Estimate pricing from existing stack")
+def pricingcalc_estimate_from_stack_tool(stack_name: str, account_id: str, region: str = "us-east-1") -> str:
+    """Estimate pricing from existing stack"""
+    params = {"stack_name": stack_name, "account_id": account_id, "region": region}
+    with measure_execution("pricingcalc_estimate_from_stack", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("pricingcalc_estimate_from_stack", params, _tool_context)
+    return format_tool_result("pricingcalc_estimate_from_stack", result)
+
 @tool(name="pr_get_diff", description="Get pull request diff and changes")
-def pr_get_diff_tool(repo: str, pr_number: int) -> str:
+def pr_get_diff_tool(repo: str, pr_number: int, actor: str, run_id: str, options: dict = None) -> str:
     """Get pull request diff and changes"""
+    params = {"repo": repo, "pr_number": pr_number, "actor": actor, "run_id": run_id}
+    if options:
+        params["options"] = options
     with measure_execution("pr_get_diff", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
-        result = execute_tool("pr_get_diff", {"repo": repo, "pr_number": pr_number}, _tool_context)
+        result = execute_tool("pr_get_diff", params, _tool_context)
     return format_tool_result("pr_get_diff", result)
 
 @tool(name="pr_summarize", description="Analyze pull request for security and best practices")
-def pr_summarize_tool(repo: str, pr_number: int, diff: str = None) -> str:
+def pr_summarize_tool(repo: str, pr_number: int, actor: str, run_id: str, diff: str, changed_files: list, options: dict = None) -> str:
     """Analyze pull request for security and best practices"""
-    # If no diff provided, get it first
-    if not diff:
-        diff_result = pr_get_diff_tool(repo, pr_number)
-        if diff_result.startswith("Error:"):
-            return f"Cannot analyze PR: {diff_result}"
-        diff = diff_result
-    
+    params = {"repo": repo, "pr_number": pr_number, "actor": actor, "run_id": run_id, "diff": diff, "changed_files": changed_files}
+    if options:
+        params["options"] = options
     with measure_execution("pr_summarize", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
-        result = execute_tool("pr_summarize", {"repo": repo, "pr_number": pr_number, "diff": diff}, _tool_context)
+        result = execute_tool("pr_summarize", params, _tool_context)
     return format_tool_result("pr_summarize", result)
 
 @tool(name="deploy_run", description="Run deployment workflow")
@@ -91,6 +194,16 @@ def workflow_list_tool(repo: str) -> str:
 
 # Map tool names to functions
 ALL_TOOL_FUNCTIONS = {
+    "ecs_call_tool": ecs_call_tool,
+    "iac_call_tool": iac_call_tool,
+    "deploy_get_run": deploy_get_run_tool,
+    "deploy_get_steps": deploy_get_steps_tool,
+    "deploy_find_latest": deploy_find_latest_tool,
+    "deploy_find_active": deploy_find_active_tool,
+    "deploy_get_summary": deploy_get_summary_tool,
+    "pricingcalc_estimate_from_cfn": pricingcalc_estimate_from_cfn_tool,
+    "pricingcalc_estimate_with_custom_specs": pricingcalc_estimate_with_custom_specs_tool,
+    "pricingcalc_estimate_from_stack": pricingcalc_estimate_from_stack_tool,
     "pr_get_diff": pr_get_diff_tool,
     "pr_summarize": pr_summarize_tool,
     "deploy_run": deploy_run_tool,

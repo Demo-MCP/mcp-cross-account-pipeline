@@ -105,18 +105,27 @@ async def admin_endpoint(request: BrokerRequest):
         if any(word in prompt_lower for word in ["cost", "price", "pricing", "estimate"]):
             try:
                 answer = agent(request.ask_text, output_type=CostAnalysis)
-            except:
+            except Exception as e:
+                print(f"Structured output failed: {e}")
                 answer = agent(request.ask_text)
         elif any(word in prompt_lower for word in ["pull request", "pr", "security"]):
             try:
                 answer = agent(request.ask_text, output_type=PRAnalysis)
-            except:
+            except Exception as e:
+                print(f"Structured output failed: {e}")
                 answer = agent(request.ask_text)
         else:
             answer = agent(request.ask_text)
         
-        # Use shared admin tools count
-        from agents.tool_policy import ALL_ADMIN_TOOLS
+        return {
+            "answer": answer.content if hasattr(answer, 'content') else answer,
+            "structured_data": answer.structured_output if hasattr(answer, 'structured_output') else None,
+            "debug": {
+                "tier": "admin", 
+                "tools_advertised_count": len(ALL_ADMIN_TOOLS),
+                "total_ms": int((time.time() - start_time) * 1000)
+            }
+        }
         
         return {
             "answer": answer,
