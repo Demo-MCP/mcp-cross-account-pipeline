@@ -8,7 +8,7 @@ on:
 
 jobs:
   analyze:
-    if: (github.event.issue.pull_request || github.event.pull_request) && startsWith(github.event.comment.body, '/analyze') && contains(fromJson('["suhaibchisti"]'), github.actor)
+    if: (github.event.issue.pull_request || github.event.pull_request) && startsWith(github.event.comment.body, '/analyze') 
     runs-on: self-hosted
     
     steps:
@@ -37,11 +37,10 @@ jobs:
             \"region\": \"us-east-1\",
             \"metadata\": {
               \"actor\": \"${{ github.actor }}\",
-              \"repo\": \"${{ github.repository }}\",
+              \"repository\": \"${{ github.repository }}\",
               \"pr_number\": ${{ github.event.issue.number || github.event.pull_request.number }},
               \"run_id\": \"${{ github.run_id }}\"
-            },
-            \"pr_context_url\": \"http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com/pr\"
+            }
           }" \
           --max-time 120 \
           --fail-with-body)
