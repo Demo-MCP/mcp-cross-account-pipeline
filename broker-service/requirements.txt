@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+boto3
+requests
+strands-agents>=0.2.0
+strands-agents-tools>=0.2.0
+mcp
