@@ -30,10 +30,22 @@ jobs:
       id: broker
       run: |
         echo "Question: ${{ steps.question.outputs.text }}"
-        echo "Calling broker service..."
         
-        RESULT=$(curl -s -X POST \
-          "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
+        # Pre-flight health check
+        echo "=== TESTING BROKER HEALTH ==="
+        curl -f --connect-timeout 10 --max-time 30 \
+          "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health" || {
+          echo "❌ Broker health check failed"
+          exit 1
+        }
+        echo "✅ Broker health check passed"
+        
+        # Main call with detailed logging
+        echo "=== CALLING BROKER SERVICE ==="
+        RESULT=$(curl -s -w "\n=== CURL STATS ===\nHTTP: %{http_code}\nTime: %{time_total}s\nConnect: %{time_connect}s\nSize: %{size_download} bytes\n" \
+          --connect-timeout 30 \
+          --max-time 120 \
+          -X POST "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
           -H "Content-Type: application/json" \
           -d "{
             \"ask_text\": \"${{ steps.question.outputs.text }}\",
@@ -41,26 +53,25 @@ jobs:
             \"region\": \"us-east-1\",
             \"metadata\": {
               \"actor\": \"${{ github.actor }}\",
-              \"repo\": \"${{ github.repository }}\",
+              \"repository\": \"${{ github.repository }}\",
               \"pr_number\": ${{ github.event.issue.number || github.event.pull_request.number }},
               \"run_id\": \"${{ github.run_id }}\"
             },
             \"shim_url\": \"http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com\"
-          }" \
-          --max-time 120 \
-          --fail-with-body)
+          }" 2>&1)
         
         CURL_EXIT=$?
+        echo "=== CURL RESULT ==="
+        echo "Exit code: $CURL_EXIT"
+        echo "Response: $RESULT"
+        
         if [ $CURL_EXIT -ne 0 ]; then
-          echo "Curl failed with exit code: $CURL_EXIT"
-          echo "Response: $RESULT"
+          echo "❌ Curl failed with exit code: $CURL_EXIT"
           exit $CURL_EXIT
         fi
         
-        echo "Broker response: $RESULT"
-        
-        # Extract answer from JSON response
-        ANSWER=$(echo "$RESULT" | jq -r '.answer // "No answer field"' 2>/dev/null || echo "JSON parse failed: $RESULT")
+        # Extract answer from JSON response - try final_response first, fallback to answer
+        ANSWER=$(echo "$RESULT" | jq -r '.final_response // .answer // "No answer field"' 2>/dev/null || echo "JSON parse failed: $RESULT")
         
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$ANSWER" >> $GITHUB_OUTPUT
