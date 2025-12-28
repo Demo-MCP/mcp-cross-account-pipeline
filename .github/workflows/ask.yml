@@ -42,15 +42,9 @@ jobs:
         
         # Main call with detailed logging
         echo "=== CALLING BROKER SERVICE ==="
-        
-        # Create correlation ID from GitHub context
-        CORRELATION_ID="${{ github.repository }}__pr-${{ github.event.issue.number || github.event.pull_request.number }}__run-${{ github.run_id }}__actor-${{ github.actor }}"
-        echo "Correlation ID: $CORRELATION_ID"
-        
         RESULT=$(curl -s -w "\n=== CURL STATS ===\nHTTP: %{http_code}\nTime: %{time_total}s\nConnect: %{time_connect}s\nSize: %{size_download} bytes\n" \
           --connect-timeout 30 \
           --max-time 120 \
-          -H "x-correlation-id: $CORRELATION_ID" \
           -X POST "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
           -H "Content-Type: application/json" \
           -d "{
