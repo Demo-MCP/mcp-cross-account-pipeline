@@ -3,12 +3,38 @@ import json
 import os
 import requests
 import boto3
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, List
 from tool_policy import is_tool_allowed
+from agents.correlation import get_or_create_correlation_id, add_correlation_headers
+from agents.tool_policy import get_denied_tool_response
 
 app = FastAPI(title="MCP Broker Service")
+
+# Correlation ID Middleware
+class CorrelationMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Extract or create correlation ID
+        correlation_id = get_or_create_correlation_id(
+            dict(request.headers),
+            getattr(request.state, 'metadata', {}),
+            getattr(request.state, 'prompt', '')
+        )
+        
+        # Store in request state
+        request.state.correlation_id = correlation_id
+        
+        # Process request
+        response = await call_next(request)
+        
+        # Add to response headers
+        response.headers['x-correlation-id'] = correlation_id
+        
+        return response
+
+app.add_middleware(CorrelationMiddleware)
 
 # Cache tools at startup to avoid delays on each request
 _cached_tools = None
@@ -20,9 +46,11 @@ def initialize_tools():
     print(f"[STARTUP] Cached {len(_cached_tools)} tools")
 
 def get_filtered_tools(tier: str) -> List[Dict]:
-    """Get tools filtered by tier policy"""
+    """Get tools filtered by tier policy with fail-closed security"""
     if not _cached_tools:
         initialize_tools()
+    
+    from agents.tool_policy import is_tool_allowed
     
     filtered_tools = []
     for tool in _cached_tools:
@@ -57,28 +85,47 @@ async def health_check():
 
 @app.get("/tools")
 async def list_tools():
-    """List all available tools for debugging"""
-    return {"tools": [tool["toolSpec"]["name"] for tool in _cached_tools], "count": len(_cached_tools)}
+    """Debug endpoint to list available tools by tier"""
+    from agents.tool_policy import get_tool_counts_by_tier, USER_ALLOWED_TOOL_NAMES, ALL_ADMIN_TOOLS
+    
+    counts = get_tool_counts_by_tier()
+    
+    return {
+        "user_tools": list(USER_ALLOWED_TOOL_NAMES),
+        "admin_tools": list(ALL_ADMIN_TOOLS),
+        "counts": counts,
+        "total_available": len(_cached_tools) if _cached_tools else 0
+    }
 
 @app.post("/ask")
-async def ask_question(request: AskRequest):
+async def ask_question(request: AskRequest, req: Request):
     try:
-        print(f"[ASK] Question: {request.ask_text}")
-        return await handle_request(request, tier="user")
+        # Store metadata and prompt for correlation ID
+        req.state.metadata = request.metadata
+        req.state.prompt = request.ask_text
+        
+        correlation_id = req.state.correlation_id
+        print(f"[ASK] Question: {request.ask_text} | Correlation: {correlation_id}")
+        return await handle_request(request, tier="user", correlation_id=correlation_id)
     except Exception as e:
         print(f"Error in /ask: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin")
-async def admin_question(request: AdminRequest):
+async def admin_question(request: AdminRequest, req: Request):
     try:
-        print(f"[ADMIN] Question: {request.ask_text}")
-        return await handle_request(request, tier="admin")
+        # Store metadata and prompt for correlation ID
+        req.state.metadata = request.metadata
+        req.state.prompt = request.ask_text
+        
+        correlation_id = req.state.correlation_id
+        print(f"[ADMIN] Question: {request.ask_text} | Correlation: {correlation_id}")
+        return await handle_request(request, tier="admin", correlation_id=correlation_id)
     except Exception as e:
         print(f"Error in /admin: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def handle_request(request, tier: str):
+async def handle_request(request, tier: str, correlation_id: str):
     """Shared handler for both /ask and /admin endpoints"""
     import time
     start_time = time.time()
@@ -88,7 +135,7 @@ async def handle_request(request, tier: str):
     tools_called = []
     denied_tool_calls = []
     
-    result = call_bedrock(request.ask_text, filtered_tools, request.shim_url, request.account_id, request.region, request.metadata, tier, tools_called, denied_tool_calls)
+    result = call_bedrock(request.ask_text, filtered_tools, request.shim_url, request.account_id, request.region, request.metadata, tier, tools_called, denied_tool_calls, correlation_id)
     
     total_ms = int((time.time() - start_time) * 1000)
     
@@ -96,6 +143,7 @@ async def handle_request(request, tier: str):
         "answer": result,
         "debug": {
             "tier": tier,
+            "correlation_id": correlation_id,
             "tools_advertised_count": len(filtered_tools),
             "tools_called": tools_called,
             "denied_tool_calls": denied_tool_calls,
@@ -103,7 +151,7 @@ async def handle_request(request, tier: str):
         }
     }
 
-def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, region: str, metadata: Dict[str, Any], tier: str, tools_called: List[str], denied_tool_calls: List[str]) -> str:
+def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, region: str, metadata: Dict[str, Any], tier: str, tools_called: List[str], denied_tool_calls: List[str], correlation_id: str) -> str:
     bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
     
     # System prompt is passed separately in Converse API
@@ -116,7 +164,7 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
     iteration = 0
     while iteration < 10:
         iteration += 1
-        print(f"[BEDROCK] Iteration {iteration}")
+        print(f"[BEDROCK] Iteration {iteration} | Correlation: {correlation_id}")
         
         # Use Converse API for Nova Pro
         response = bedrock.converse(
@@ -156,14 +204,14 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
 
                 # B) Enforce tool execution gating - fail closed
                 if not is_tool_allowed(tool_name, tier):
-                    error_msg = f"Tool '{tool_name}' not allowed for this endpoint"
-                    print(f"[SECURITY] {error_msg}")
+                    error_response = get_denied_tool_response(tool_name, tier, correlation_id)
+                    print(f"[SECURITY] {error_response['message']} | Correlation: {correlation_id}")
                     denied_tool_calls.append(tool_name)
                     
                     tool_results.append({
                         "toolResult": {
                             "toolUseId": tool_use['toolUseId'],
-                            "content": [{"json": {"error": error_msg}}],
+                            "content": [{"json": error_response}],
                             "status": "error"
                         }
                     })
@@ -175,10 +223,10 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
                 # Route to appropriate MCP backend
                 if tool_name.startswith('pr_'):
                     # Route PR tools to PR Context MCP
-                    result_data = call_mcp_tool(f"{shim_url}/pr", tool_name, tool_input, metadata)
+                    result_data = call_mcp_tool(f"{shim_url}/pr", tool_name, tool_input, metadata, correlation_id)
                 elif tool_name.startswith('pricingcalc_'):
                     # Route pricing calculator tools to pricing MCP server
-                    result_data = call_pricing_tool(tool_name, tool_input)
+                    result_data = call_pricing_tool(tool_name, tool_input, correlation_id)
                 elif tool_name.startswith('deploy_'):
                     # Route deployment metrics tools to metrics MCP server
                     # Extract missing parameters from metadata
@@ -232,7 +280,7 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
                         except Exception as e:
                             print(f"[METRICS] Could not auto-select run: {e}")
                     
-                    result_data = call_metrics_tool(tool_name, tool_input)
+                    result_data = call_metrics_tool(tool_name, tool_input, correlation_id)
                 else:
                     # Route to existing MCP servers via gateway
                     server_type = 'iac' if 'iac' in tool_name else 'ecs'
@@ -240,7 +288,8 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
                         shim_url, 
                         server_type, 
                         tool_input.get('tool', ''), 
-                        {**tool_input.get('params', {}), 'account_id': account_id, 'region': region, '_metadata': metadata}
+                        {**tool_input.get('params', {}), 'account_id': account_id, 'region': region, '_metadata': metadata},
+                        correlation_id
                     )
                 
                 print(f"[BEDROCK] Tool result: {result_data}")
@@ -259,33 +308,37 @@ def call_bedrock(ask_text: str, tools: list, shim_url: str, account_id: str, reg
 
     return "Reached maximum iteration limit."
 
-def call_shim_tool(shim_url: str, server: str, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def call_shim_tool(shim_url: str, server: str, tool: str, params: Dict[str, Any], correlation_id: str) -> Dict[str, Any]:
     try:
-        print(f"[SHIM] Calling {server}/{tool} with timeout=120s")
+        print(f"[SHIM] Calling {server}/{tool} | Correlation: {correlation_id}")
+        
+        headers = add_correlation_headers({"Content-Type": "application/json"}, correlation_id)
+        
         response = requests.post(
             f"{shim_url}/call-tool",
             json={"server": server, "tool": tool, "params": params},
+            headers=headers,
             timeout=120
         )
         response.raise_for_status()
-        print(f"[SHIM] Success: {server}/{tool}")
+        print(f"[SHIM] Success: {server}/{tool} | Correlation: {correlation_id}")
         return response.json()
     except requests.exceptions.Timeout:
-        error_msg = f"Timeout calling {server}/{tool} after 120 seconds"
+        error_msg = f"Timeout calling {server}/{tool} after 120 seconds | Correlation: {correlation_id}"
         print(f"[SHIM] {error_msg}")
         return {"error": error_msg}
     except Exception as e:
-        error_msg = f"Error calling {server}/{tool}: {str(e)}"
+        error_msg = f"Error calling {server}/{tool}: {str(e)} | Correlation: {correlation_id}"
         print(f"[SHIM] {error_msg}")
         return {"error": error_msg}
 
-def call_metrics_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+def call_metrics_tool(tool_name: str, tool_input: Dict[str, Any], correlation_id: str) -> Dict[str, Any]:
     """Call deployment metrics MCP server directly via ALB"""
     try:
         # Get ALB URL from environment or use actual ALB
         alb_url = os.environ.get('ALB_URL', 'http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com')
         
-        print(f"[METRICS] Calling {tool_name} with timeout=50s")
+        print(f"[METRICS] Calling {tool_name} | Correlation: {correlation_id}")
         
         # Format as MCP JSON-RPC 2.0 request
         mcp_request = {
@@ -298,16 +351,18 @@ def call_metrics_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, A
             }
         }
         
+        headers = add_correlation_headers({"Content-Type": "application/json"}, correlation_id)
+        
         response = requests.post(
             f"{alb_url}/metrics",
             json=mcp_request,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=50
         )
         response.raise_for_status()
         
         result = response.json()
-        print(f"[METRICS] Success: {tool_name}")
+        print(f"[METRICS] Success: {tool_name} | Correlation: {correlation_id}")
         
         # Extract result from MCP response
         if 'result' in result and 'content' in result['result']:
@@ -328,13 +383,13 @@ def call_metrics_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, A
         return result.get('result', result)
         
     except Exception as e:
-        print(f"[METRICS] Error calling {tool_name}: {e}")
+        print(f"[METRICS] Error calling {tool_name}: {e} | Correlation: {correlation_id}")
         return {"error": str(e)}
 
-def call_mcp_tool(mcp_url: str, tool_name: str, tool_input: Dict[str, Any], metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+def call_mcp_tool(mcp_url: str, tool_name: str, tool_input: Dict[str, Any], metadata: Dict[str, Any] = None, correlation_id: str = None) -> Dict[str, Any]:
     """Call MCP service tool directly"""
     try:
-        print(f"[MCP] Calling {mcp_url} tool {tool_name}")
+        print(f"[MCP] Calling {mcp_url} tool {tool_name} | Correlation: {correlation_id}")
         
         # Map parameters for PR tools
         if tool_name.startswith('pr_') and metadata:
@@ -350,6 +405,8 @@ def call_mcp_tool(mcp_url: str, tool_name: str, tool_input: Dict[str, Any], meta
                     mapped_input[key] = value
             tool_input = mapped_input
         
+        headers = add_correlation_headers({"Content-Type": "application/json"}, correlation_id)
+        
         response = requests.post(
             mcp_url,
             json={
@@ -361,6 +418,7 @@ def call_mcp_tool(mcp_url: str, tool_name: str, tool_input: Dict[str, Any], meta
                     "arguments": tool_input
                 }
             },
+            headers=headers,
             timeout=120
         )
         response.raise_for_status()
@@ -372,17 +430,17 @@ def call_mcp_tool(mcp_url: str, tool_name: str, tool_input: Dict[str, Any], meta
         return result.get("result", {})
         
     except requests.exceptions.Timeout:
-        return {"error": f"MCP tool {tool_name} timed out after 120 seconds"}
+        return {"error": f"MCP tool {tool_name} timed out after 120 seconds | Correlation: {correlation_id}"}
     except Exception as e:
-        return {"error": f"MCP tool {tool_name} failed: {str(e)}"}
+        return {"error": f"MCP tool {tool_name} failed: {str(e)} | Correlation: {correlation_id}"}
 
-def call_pricing_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+def call_pricing_tool(tool_name: str, tool_input: Dict[str, Any], correlation_id: str) -> Dict[str, Any]:
     """Call pricing calculator MCP server directly via ALB"""
     try:
         # Get ALB URL from environment or use actual ALB
         alb_url = os.environ.get('ALB_URL', 'http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com')
         
-        print(f"[PRICING] Calling {tool_name} with timeout=90s")
+        print(f"[PRICING] Calling {tool_name} | Correlation: {correlation_id}")
         
         # Format as MCP JSON-RPC 2.0 request
         mcp_request = {
@@ -395,22 +453,24 @@ def call_pricing_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, A
             }
         }
         
+        headers = add_correlation_headers({"Content-Type": "application/json"}, correlation_id)
+        
         response = requests.post(
             f"{alb_url}/pricingcalc",
             json=mcp_request,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=60
         )
         response.raise_for_status()
         
         result = response.json()
-        print(f"[PRICING] Success: {tool_name}")
+        print(f"[PRICING] Success: {tool_name} | Correlation: {correlation_id}")
         
         # Extract result from MCP response - pricing tools return direct JSON
         return result
         
     except Exception as e:
-        print(f"[PRICING] Error calling {tool_name}: {e}")
+        print(f"[PRICING] Error calling {tool_name}: {e} | Correlation: {correlation_id}")
         return {"error": str(e)}
 
 def get_available_tools() -> list:

@@ -1,5 +1,6 @@
 """
 Metadata-first parameter resolution - prevents parameter invention
+Enhanced with user-intent-first approach for explicit requests
 """
 import re
 from typing import Dict, Any, Optional, List
@@ -49,13 +50,13 @@ def extract_stack_name(prompt: str) -> Optional[str]:
 
 def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict:
     """
-    Resolve required parameters using metadata-first approach
+    Resolve required parameters using metadata-first + user-intent-first approach
     Returns resolved params or raises MissingParamsError
     """
     resolved = {}
     missing = []
     
-    # Always prefer metadata over model args
+    # Always prefer metadata over model args for identity/infrastructure
     metadata = ctx.get("metadata", {})
     aws_ctx = ctx.get("aws", {})
     
@@ -70,7 +71,16 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
     if tool_name.startswith("pr_"):
         # PR tools require repo, pr_number, actor, run_id
         resolved["repo"] = metadata.get("repository") or metadata.get("repo")
-        resolved["pr_number"] = metadata.get("pr_number")
+        
+        # PR Number - USER INTENT WINS (what they explicitly asked for)
+        if "pr_number" in model_args:
+            resolved["pr_number"] = model_args["pr_number"]  # ✅ User said "PR #7"
+        elif "pr_number" in metadata:
+            resolved["pr_number"] = metadata["pr_number"]    # Fallback to context PR
+        else:
+            # Try extracting from prompt
+            resolved["pr_number"] = extract_pr_number(ctx.get("prompt", ""))
+        
         resolved["actor"] = metadata.get("actor") 
         resolved["run_id"] = metadata.get("run_id")
         
@@ -81,10 +91,6 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
         
         # Optional parameters
         resolved["options"] = metadata.get("options", {})
-        
-        # Fallback: extract PR number from prompt if missing
-        if not resolved["pr_number"]:
-            resolved["pr_number"] = extract_pr_number(ctx.get("prompt", ""))
             
         # Check for missing required params
         required_params = ["repo", "pr_number", "actor", "run_id"]
@@ -98,15 +104,25 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
     elif tool_name.startswith("deploy_"):
         # Deploy tools have different parameter requirements
         if tool_name in ["deploy_find_latest", "deploy_find_active"]:
-            # These tools need repository parameter
-            resolved["repository"] = metadata.get("repository") or metadata.get("repo")
-            if not resolved["repository"]:
+            # Repository - user intent wins for cross-repo queries
+            if "repository" in model_args:
+                resolved["repository"] = model_args["repository"]  # ✅ User specified repo
+            elif "repository" in metadata:
+                resolved["repository"] = metadata["repository"]    # Fallback to context
+            elif "repo" in metadata:
+                resolved["repository"] = metadata["repo"]
+            
+            if not resolved.get("repository"):
                 missing.append("repository")
         
         if tool_name in ["deploy_get_run", "deploy_get_steps", "deploy_get_summary"]:
-            # These tools need run_id parameter
-            resolved["run_id"] = metadata.get("run_id")
-            if not resolved["run_id"]:
+            # Run ID - user intent wins for specific run queries
+            if "run_id" in model_args:
+                resolved["run_id"] = model_args["run_id"]  # ✅ User asked for specific run
+            elif "run_id" in metadata:
+                resolved["run_id"] = metadata["run_id"]    # Fallback to context
+            
+            if not resolved.get("run_id"):
                 missing.append("run_id")
         
         # Optional parameters
@@ -117,7 +133,6 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
                 
     elif tool_name in ["ecs_call_tool", "iac_call_tool"]:
         # ECS and IAC tools need account_id and region (already set above)
-        # ECS tools may need api_operation and api_params from model args
         if tool_name == "ecs_call_tool":
             # Map common lowercase operations to proper AWS API names
             api_op = model_args.get("api_operation", "ListClusters")
@@ -132,21 +147,26 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
             resolved["api_operation"] = operation_map.get(api_op.lower(), api_op) if isinstance(api_op, str) else "ListClusters"
             resolved["api_params"] = model_args.get("api_params", {})
         elif tool_name == "iac_call_tool":
-            resolved["stack_name"] = model_args.get("stack_name") or extract_stack_name(ctx.get("prompt", ""))
+            # Stack name - user intent wins
+            if "stack_name" in model_args:
+                resolved["stack_name"] = model_args["stack_name"]
+            else:
+                resolved["stack_name"] = extract_stack_name(ctx.get("prompt", ""))
             if not resolved["stack_name"]:
                 missing.append("stack_name")
                 
     elif tool_name.startswith("pricingcalc_"):
         # Pricing tools have different parameter requirements
         if tool_name == "pricingcalc_estimate_from_cfn":
-            resolved["template_content"] = metadata.get("template_content") or metadata.get("template")
+            # Template content - user input first
+            resolved["template_content"] = model_args.get("template_content") or model_args.get("template") or metadata.get("template_content") or metadata.get("template")
             resolved["region"] = metadata.get("region", "us-east-1")
             if not resolved["template_content"]:
                 missing.append("template_content")
                 
         elif tool_name == "pricingcalc_estimate_with_custom_specs":
-            resolved["template_content"] = metadata.get("template_content") or metadata.get("template")
-            resolved["custom_specs"] = metadata.get("custom_specs")
+            resolved["template_content"] = model_args.get("template_content") or model_args.get("template") or metadata.get("template_content") or metadata.get("template")
+            resolved["custom_specs"] = model_args.get("custom_specs") or metadata.get("custom_specs")
             resolved["region"] = metadata.get("region", "us-east-1")
             if not resolved["template_content"]:
                 missing.append("template_content")
@@ -154,7 +174,11 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
                 missing.append("custom_specs")
                 
         elif tool_name == "pricingcalc_estimate_from_stack":
-            resolved["stack_name"] = metadata.get("stack_name")
+            # Stack name - user intent wins
+            if "stack_name" in model_args:
+                resolved["stack_name"] = model_args["stack_name"]
+            else:
+                resolved["stack_name"] = metadata.get("stack_name")
             resolved["account_id"] = metadata.get("account_id") or aws_ctx.get("account_id")
             resolved["region"] = metadata.get("region") or aws_ctx.get("region", "us-east-1")
             if not resolved["stack_name"]:
@@ -165,7 +189,6 @@ def resolve_required_params(tool_name: str, model_args: dict, ctx: dict) -> dict
     if missing:
         raise MissingParamsError(missing, tool_name)
     
-    return resolved
     return {k: v for k, v in resolved.items() if v is not None}
 
 class MissingParamsError(Exception):
@@ -175,11 +198,14 @@ class MissingParamsError(Exception):
         self.tool_name = tool_name
         super().__init__(f"Missing required parameters for {tool_name}: {missing_params}")
 
-def get_missing_params_response(missing_params: List[str], tool_name: str) -> dict:
+def get_missing_params_response(missing_params: List[str], tool_name: str, correlation_id: str = None) -> dict:
     """Standard response for missing parameters"""
-    return {
+    response = {
         "error_type": "MISSING_PARAMS",
         "tool": tool_name,
         "missing": missing_params,
         "message": f"Missing required parameters for {tool_name}: {', '.join(missing_params)}. Provide them in metadata or request."
     }
+    if correlation_id:
+        response["correlation_id"] = correlation_id
+    return response
