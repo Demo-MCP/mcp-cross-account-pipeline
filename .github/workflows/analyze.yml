@@ -27,14 +27,23 @@ jobs:
       run: |
         echo "Admin Question: ${{ steps.question.outputs.text }}"
         
-        # Pre-flight health check
+        # Pre-flight health check with retry logic
         echo "=== TESTING BROKER HEALTH ==="
-        curl -f --connect-timeout 10 --max-time 30 \
-          "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health" || {
-          echo "❌ Broker health check failed"
-          exit 1
-        }
-        echo "✅ Broker health check passed"
+        for attempt in 1 2 3; do
+          echo "Health check attempt $attempt..."
+          if curl -f --connect-timeout 10 --max-time 30 \
+            "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health"; then
+            echo "✅ Broker health check passed"
+            break
+          else
+            echo "❌ Health check attempt $attempt failed"
+            if [ $attempt -eq 3 ]; then
+              echo "❌ All health check attempts failed"
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          fi
+        done
         
         # Main call with detailed logging
         echo "=== CALLING ADMIN BROKER SERVICE ==="
