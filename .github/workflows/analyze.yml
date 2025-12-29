@@ -77,7 +77,7 @@ jobs:
           exit $CURL_EXIT
         fi
         
-        # Extract answer from JSON response
+        # Extract response from JSON
         ANSWER=$(echo "$RESULT" | jq -r '.final_response' 2>/dev/null || echo "JSON parse failed: $RESULT")
         
         echo "result<<EOF" >> $GITHUB_OUTPUT

@@ -181,7 +181,7 @@ async def ask_endpoint(request: BrokerRequest, req: Request):
         guard_result = check_intent_guards(ctx)
         if guard_result:
             return {
-                "answer": f"Request blocked: {guard_result['message']}",
+                "final_response": f"Request blocked: {guard_result['message']}",
                 "debug": {
                     "tier": "user",
                     "correlation_id": correlation_id,
@@ -229,7 +229,6 @@ async def ask_endpoint(request: BrokerRequest, req: Request):
             curated_answer = curate_response(raw_response)
         
         return {
-            "answer": answer,
             "final_response": curated_answer,
             "debug": {
                 "tier": "user",
@@ -269,7 +268,7 @@ async def admin_endpoint(request: BrokerRequest, req: Request):
         guard_result = check_intent_guards(ctx)
         if guard_result and guard_result.get("error_type") == "MISSING_PARAMS":
             return {
-                "answer": f"Missing information: {guard_result['message']}",
+                "final_response": f"Missing information: {guard_result['message']}",
                 "debug": {
                     "tier": "admin",
                     "correlation_id": correlation_id,
@@ -330,7 +329,6 @@ async def admin_endpoint(request: BrokerRequest, req: Request):
             structured_data = None
         
         return {
-            "answer": final_answer,
             "final_response": curated_answer,
             "structured_data": structured_data,
             "debug": {
