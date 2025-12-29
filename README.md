@@ -1,29 +1,90 @@
 # MCP Cross-Account Pipeline
 
-End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support, Nova Pro AI integration, and tier-based security.
+End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support, Nova Pro AI integration, and enhanced Strands implementation.
 
 ## 🏗️ Architecture
 
 ```
-GitHub PR Comment → GitHub Actions → Broker Service → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
+GitHub PR Comment → GitHub Actions → Enhanced Strands Broker → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
 ```
 
-## ✨ Features
+## ✨ Enhanced Strands Implementation
+
+### 🧠 Advanced Prompt Engineering
+- **Context-Aware Prompts**: Dynamic prompt generation based on tool context and user intent
+- **Multi-Turn Conversations**: Maintains conversation state across tool calls
+- **Tool-Specific Instructions**: Tailored prompts for different tool categories (ECS, IAC, PR analysis)
+- **Error Recovery Prompts**: Intelligent error handling with contextual retry strategies
+
+### 🛡️ Intelligent Guards System
+- **Pre-Execution Validation**: Validates tool parameters before execution
+- **Security Guards**: Prevents unauthorized access to sensitive operations
+- **Rate Limiting**: Protects against excessive API calls
+- **Input Sanitization**: Validates and sanitizes all user inputs
+- **Tool Compatibility Checks**: Ensures tool combinations are valid
+
+### 🎯 Model-Minimal Architecture
+- **Efficient Token Usage**: Optimized prompts to minimize token consumption
+- **Selective Context**: Only includes relevant context for each tool call
+- **Response Compression**: Compresses verbose API responses while preserving key information
+- **Smart Caching**: Caches frequently used data to reduce model calls
+- **Streaming Optimization**: Handles large responses without token overflow
+
+### 🔄 Stateful Data Handoff
+- **Internal Tool Orchestration**: Tools can call other tools internally without exposing complexity to Nova
+- **Data Pipeline**: Seamless data flow between pr_get_diff → pr_analyze → pr_summarize
+- **Context Preservation**: Maintains state across multi-step operations
+- **Error Isolation**: Failures in one step don't cascade to others
+- **Response Aggregation**: Combines multiple tool outputs into coherent responses
+
+### 🚫 Hallucination Prevention
+- **Fact-Based Responses**: All responses grounded in actual API data
+- **Source Attribution**: Clear attribution of information sources
+- **Validation Layers**: Multiple validation steps prevent incorrect information
+- **Structured Outputs**: Enforced JSON schemas for consistent, accurate responses
+- **Real-Time Verification**: Cross-references responses with live AWS data
+
+## ✨ Core Features
 
 * **🔄 Tier-Based Broker**: Secure multi-tier access control with `/ask` (user) and `/admin` (privileged) endpoints
 * **🔒 Security-First Design**: Fail-closed security with tool execution gating and explicit allowlists
 * **📊 Deployment Metrics Integration**: Real-time GitHub Actions deployment tracking and analysis
 * **🔍 PR Analysis Tools**: Comprehensive pull request analysis with security scanning (admin-only)
-* **🤖 Nova Pro Integration**: Advanced AI tool calling with agentic loops
+* **🤖 Nova Pro Integration**: Advanced AI tool calling with agentic loops and streaming timeout resolution
 * **🔀 Cross-Account Support**: Dynamic role assumption per API call
 * **🌐 MCP Protocol**: Standardized AI tool integration with gateway routing
-* **☁️ ECS Fargate**: Serverless container execution
-* **🔗 GitHub Integration**: PR comment triggers and responses
+* **☁️ ECS Fargate**: Serverless container execution with container stability improvements
+* **🔗 GitHub Integration**: PR comment triggers and responses with enhanced workflow output
 * **🏗️ Multi-Service**: ECS, Infrastructure-as-Code, deployment analysis, and pricing
 
-### 🆕 New: Tier-Based Security System
+### 🆕 Enhanced: Streaming Timeout Resolution
 
-The broker now implements comprehensive tier-based access control:
+**Problem Solved**: Large CloudFormation templates (169+ lines) were causing "Response ended prematurely" errors and container crashes.
+
+**Solution Implemented**:
+- **Tool Orchestration**: Created pr_analyze orchestrator tool that handles large diff data internally
+- **Stateful Handoff Pattern**: pr_analyze processes large diffs internally and returns lightweight summaries to Nova
+- **Parameter Resolution**: Fixed missing correlation_id and pr_get_diff parameter issues
+- **Container Stability**: Eliminated 504 gateway timeouts and container crashes during PR analysis
+- **Checkov Integration Preserved**: Maintained full security scanning functionality through internal tool calls
+
+**Results**:
+- ✅ **No More Streaming Failures**: Large templates processed without "Response ended prematurely" errors
+- ✅ **Container Stability**: No more broker container crashes during analysis
+- ✅ **Full Security Scanning**: Checkov integration maintained with comprehensive analysis output
+- ✅ **Performance**: Sub-2-minute analysis of complex CloudFormation templates
+
+### 🆕 Enhanced: Tool Selection & Orchestration
+
+**Intelligent Tool Policy Management**:
+- **Tool Descriptions**: Updated to guide Nova toward optimal tool selection
+- **Orchestration Pattern**: pr_analyze calls both pr_get_diff and pr_summarize internally
+- **Policy-Based Selection**: Tools can call other tools internally if both are available in policy
+- **Duplicate Function Cleanup**: Removed conflicting tool definitions
+
+**Tool Availability by Tier**:
+
+**Tool Availability by Tier**:
 
 **👤 User Tier (`/ask` endpoint):**
 - **9 Tools Available**: Basic infrastructure and deployment tools
@@ -33,15 +94,16 @@ The broker now implements comprehensive tier-based access control:
 
 **🔐 Admin Tier (`/admin` endpoint):**
 - **12 Tools Available**: All user tools + sensitive operations
-- **PR Analysis**: Full pull request diff analysis and security scanning
+- **PR Analysis**: Full pull request diff analysis and security scanning with pr_analyze orchestrator
 - **Stack Pricing**: Cost estimation for any CloudFormation stack
 - **Complete Access**: All infrastructure analysis capabilities
 
-**Security Features:**
+**Security Features**:
 - **Fail-Closed Design**: Tools not explicitly allowed are blocked
 - **Tool Execution Gating**: Double validation at advertisement and execution
 - **Metadata-Driven**: Uses GitHub Actions context for secure parameter mapping
 - **Audit Logging**: Tracks all tool calls and denied attempts
+- **Correlation ID Tracking**: Full request tracing for debugging and security
 
 ### 🆕 New: AWS Pricing Calculator Integration
 
@@ -68,16 +130,28 @@ The broker service now provides a single, intelligent entry point for all deploy
 - **Text Response Handling**: Properly formats text responses for Bedrock compatibility
 - **Repository Validation**: Validates repository format and prefers metadata over AI guesses
 
-### 🆕 New: PR Analysis & Security Scanning
+### 🆕 Enhanced: PR Analysis & Security Scanning
 
-Comprehensive pull request analysis with security-first approach:
-
-- **Diff Analysis**: Complete PR diff retrieval and parsing
+**Comprehensive Analysis Pipeline**:
+- **Diff Analysis**: Complete PR diff retrieval and parsing with large template support
 - **Security Scanning**: Checkov integration for infrastructure security analysis
+- **Orchestrated Workflow**: pr_analyze → pr_get_diff → pr_summarize internal handoff
 - **IAC Resource Detection**: Identifies CloudFormation, Terraform, and other IAC changes
 - **Cost Impact Analysis**: Estimates pricing impact of infrastructure changes
 - **Admin-Only Access**: Sensitive code analysis restricted to privileged users
 - **GitHub Integration**: Seamless integration with GitHub Actions workflows
+
+**Enhanced Security Features**:
+- **Medium/High/Critical Issue Detection**: Comprehensive security finding classification
+- **Resource-Specific Findings**: Identifies exact resources and line numbers with issues
+- **Remediation Guidance**: Provides actionable steps to fix security issues
+- **Compliance Scanning**: Checks against AWS security best practices
+- **Large Template Support**: Handles 169+ line CloudFormation templates without timeout
+
+**Workflow Integration**:
+- **Clean Output**: Removed `.answer` fallback for cleaner GitHub workflow results
+- **Structured Response**: Consistent JSON response format
+- **Error Handling**: Graceful handling of analysis failures with detailed error messages
 
 ## 🚀 Quick Deploy from Scratch
 
@@ -279,16 +353,20 @@ curl -X POST http://YOUR-BROKER-ALB-URL/ask \
 
 ## 🔧 Key Components
 
-### Broker Service
+### Broker Service (Enhanced Strands Implementation)
 - **🔄 Unified MCP Integration**: Single entry point routing to multiple MCP servers
 - **💰 AWS Pricing Integration**: Real-time cost estimation using AWS Pricing API
 - **📊 Deployment Metrics**: Real-time GitHub Actions deployment tracking
-- **🤖 Nova Pro Integration**: Uses `bedrock.converse()` API with agentic loops
-- **🧠 Intelligent Tool Routing**: Routes `pricingcalc_*` to pricing server, `deploy_*` to metrics server
+- **🤖 Enhanced Nova Pro Integration**: Uses `bedrock.converse()` API with streaming timeout resolution
+- **🧠 Intelligent Tool Routing**: Routes `pricingcalc_*` to pricing server, `deploy_*` to metrics server, `pr_*` to PR analysis
 - **⚡ Tool Caching**: Caches tools at startup for sub-second response times
 - **📝 Metadata Processing**: Extracts repository and run_id from GitHub Actions context
 - **🎯 Auto Run Selection**: Prioritizes RUNNING deployments for real-time tracking
-- **Performance**: ~1-2s response time with caching optimization
+- **🔄 Stateful Data Handoff**: Internal tool orchestration for complex operations (pr_analyze → pr_get_diff → pr_summarize)
+- **🛡️ Advanced Guards**: Pre-execution validation and security controls
+- **🚫 Hallucination Prevention**: Fact-based responses with source attribution
+- **📋 Correlation ID Tracking**: Full request tracing for debugging and security
+- **Performance**: ~1-2s response time with caching optimization, handles large CloudFormation templates without timeout
 
 ### AWS Pricing Calculator
 - **💲 Real-Time Pricing**: Uses AWS Pricing API for accurate cost calculations
