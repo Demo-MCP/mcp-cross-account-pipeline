@@ -31,30 +31,33 @@ jobs:
       run: |
         echo "Question: ${{ steps.question.outputs.text }}"
         
-        # Pre-flight health check with retry logic
-        echo "=== TESTING BROKER HEALTH ==="
-        for attempt in 1 2 3; do
-          echo "Health check attempt $attempt..."
-          if curl -f --connect-timeout 10 --max-time 30 \
-            "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/health"; then
-            echo "✅ Broker health check passed"
-            break
-          else
-            echo "❌ Health check attempt $attempt failed"
-            if [ $attempt -eq 3 ]; then
-              echo "❌ All health check attempts failed"
-              exit 1
-            fi
-            sleep $((attempt * 2))
-          fi
-        done
+        # Configure AWS credentials for SigV4 authentication
+        export AWS_DEFAULT_REGION=us-east-1
         
-        # Main call with detailed logging
-        echo "=== CALLING BROKER SERVICE ==="
+        # Assume the Dev role for authenticated access
+        ROLE_CREDS=$(aws sts assume-role \
+          --role-arn "arn:aws:iam::500330120558:role/DevMcpInvokeRole" \
+          --role-session-name "github-workflow-$(date +%s)" \
+          --external-id "dev-mcp-access" \
+          --output json)
+        
+        export AWS_ACCESS_KEY_ID=$(echo "$ROLE_CREDS" | jq -r '.Credentials.AccessKeyId')
+        export AWS_SECRET_ACCESS_KEY=$(echo "$ROLE_CREDS" | jq -r '.Credentials.SecretAccessKey')
+        export AWS_SESSION_TOKEN=$(echo "$ROLE_CREDS" | jq -r '.Credentials.SessionToken')
+        
+        # Create correlation ID from GitHub context
+        CORRELATION_ID="${{ github.repository }}__pr-${{ github.event.issue.number || github.event.pull_request.number }}__run-${{ github.run_id }}__actor-${{ github.actor }}"
+        echo "Correlation ID: $CORRELATION_ID"
+        
+        # Call authenticated API Gateway endpoint
         RESULT=$(curl -s -w "\n=== CURL STATS ===\nHTTP: %{http_code}\nTime: %{time_total}s\nConnect: %{time_connect}s\nSize: %{size_download} bytes\n" \
+          --aws-sigv4 "aws:amz:us-east-1:execute-api" \
+          --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+          -H "X-Amz-Security-Token: $AWS_SESSION_TOKEN" \
+          -H "x-correlation-id: $CORRELATION_ID" \
           --connect-timeout 30 \
           --max-time 120 \
-          -X POST "http://internal-broker-internal-alb-572182136.us-east-1.elb.amazonaws.com/ask" \
+          -X POST "https://d0yrd186v6.execute-api.us-east-1.amazonaws.com/prod/ask" \
           -H "Content-Type: application/json" \
           -d "{
             \"ask_text\": \"${{ steps.question.outputs.text }}\",
@@ -65,8 +68,7 @@ jobs:
               \"repository\": \"${{ github.repository }}\",
               \"pr_number\": ${{ github.event.issue.number || github.event.pull_request.number }},
               \"run_id\": \"${{ github.run_id }}\"
-            },
-            \"shim_url\": \"http://internal-mcp-internal-alb-2059913293.us-east-1.elb.amazonaws.com\"
+            }
           }" 2>&1)
         
         CURL_EXIT=$?
@@ -79,8 +81,8 @@ jobs:
           exit $CURL_EXIT
         fi
         
-        # Extract answer from JSON response - try final_response first, fallback to answer
-        ANSWER=$(echo "$RESULT" | jq -r '.final_response // .answer // "No answer field"' 2>/dev/null || echo "JSON parse failed: $RESULT")
+        # Extract answer from JSON response
+        ANSWER=$(echo "$RESULT" | jq -r '.final_response' 2>/dev/null || echo "JSON parse failed: $RESULT")
         
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$ANSWER" >> $GITHUB_OUTPUT
