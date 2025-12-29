@@ -3,7 +3,7 @@ Strands-based broker service with tier-based security and correlation ID trackin
 """
 import time
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
@@ -12,6 +12,7 @@ from agents.guards import check_intent_guards
 from agents.agents import build_user_agent, build_admin_agent
 from agents.tool_policy import USER_ALLOWED_TOOL_NAMES, ALL_ADMIN_TOOLS
 from agents.correlation import get_or_create_correlation_id
+from agents.response_curator import curate_response
 from schemas import CostAnalysis, PRAnalysis, DeploymentStatus
 
 app = FastAPI(title="MCP Strands Broker Service")
@@ -80,21 +81,47 @@ async def ask_endpoint(request: BrokerRequest, req: Request):
                 }
             }
         
-        # Build and execute user agent with structured output
+        # Build and execute user agent with structured output and retry logic
         agent = build_user_agent(ctx)
         prompt_lower = request.ask_text.lower()
         
-        # Apply structured output based on intent
-        if any(word in prompt_lower for word in ["cost", "price", "pricing", "estimate"]):
+        # Retry logic for streaming failures
+        max_retries = 2
+        for attempt in range(max_retries + 1):
             try:
-                answer = agent(request.ask_text, output_type=CostAnalysis)
-            except:
-                answer = agent(request.ask_text)
+                # Apply structured output based on intent
+                if any(word in prompt_lower for word in ["cost", "price", "pricing", "estimate"]):
+                    try:
+                        answer = agent(request.ask_text, output_type=CostAnalysis)
+                    except:
+                        answer = agent(request.ask_text)
+                else:
+                    answer = agent(request.ask_text)
+                break  # Success, exit retry loop
+            except Exception as e:
+                if "Response ended prematurely" in str(e) and attempt < max_retries:
+                    print(f"Bedrock streaming failed (attempt {attempt + 1}), retrying...")
+                    time.sleep(1)  # Brief delay before retry
+                    continue
+                else:
+                    raise  # Re-raise if not a streaming error or max retries exceeded
+        
+        # Curate response for PR comments
+        if hasattr(answer, 'content'):
+            # Structured response - curate the content
+            raw_response = {"message": {"content": [{"text": answer.content}]}}
+            curated_answer = curate_response(raw_response)
+        elif isinstance(answer, dict) and "message" in answer:
+            # Full Strands response format
+            curated_answer = curate_response(answer)
         else:
-            answer = agent(request.ask_text)
+            # Simple string response
+            raw_response = {"message": {"content": [{"text": str(answer)}]}}
+            curated_answer = curate_response(raw_response)
         
         return {
             "answer": answer,
+            "final_response": curated_answer,
             "debug": {
                 "tier": "user",
                 "correlation_id": correlation_id,
@@ -137,29 +164,61 @@ async def admin_endpoint(request: BrokerRequest, req: Request):
                 }
             }
         
-        # Build and execute admin agent with structured output
+        # Build and execute admin agent with structured output and retry logic
         agent = build_admin_agent(ctx)
         prompt_lower = request.ask_text.lower()
         
-        # Apply structured output based on intent
-        if any(word in prompt_lower for word in ["cost", "price", "pricing", "estimate"]):
+        # Retry logic for streaming failures
+        max_retries = 2
+        for attempt in range(max_retries + 1):
             try:
-                answer = agent(request.ask_text, output_type=CostAnalysis)
+                # Apply structured output based on intent
+                if any(word in prompt_lower for word in ["cost", "price", "pricing", "estimate"]):
+                    try:
+                        answer = agent(request.ask_text, output_type=CostAnalysis)
+                    except Exception as e:
+                        print(f"Structured output failed: {e}")
+                        answer = agent(request.ask_text)
+                elif any(word in prompt_lower for word in ["pull request", "pr", "security"]):
+                    try:
+                        answer = agent(request.ask_text, output_type=PRAnalysis)
+                    except Exception as e:
+                        print(f"Structured output failed: {e}")
+                        answer = agent(request.ask_text)
+                else:
+                    answer = agent(request.ask_text)
+                break  # Success, exit retry loop
             except Exception as e:
-                print(f"Structured output failed: {e}")
-                answer = agent(request.ask_text)
-        elif any(word in prompt_lower for word in ["pull request", "pr", "security"]):
-            try:
-                answer = agent(request.ask_text, output_type=PRAnalysis)
-            except Exception as e:
-                print(f"Structured output failed: {e}")
-                answer = agent(request.ask_text)
+                if "Response ended prematurely" in str(e) and attempt < max_retries:
+                    print(f"Bedrock streaming failed (attempt {attempt + 1}), retrying...")
+                    time.sleep(1)  # Brief delay before retry
+                    continue
+                else:
+                    raise  # Re-raise if not a streaming error or max retries exceeded
+        
+        # Curate response for PR comments
+        if hasattr(answer, 'content'):
+            # Structured response - curate the content
+            raw_response = {"message": {"content": [{"text": answer.content}]}}
+            curated_answer = curate_response(raw_response)
+            final_answer = answer.content
+            structured_data = answer.structured_output if hasattr(answer, 'structured_output') else None
+        elif isinstance(answer, dict) and "message" in answer:
+            # Full Strands response format
+            curated_answer = curate_response(answer)
+            final_answer = answer
+            structured_data = None
         else:
-            answer = agent(request.ask_text)
+            # Simple string response
+            raw_response = {"message": {"content": [{"text": str(answer)}]}}
+            curated_answer = curate_response(raw_response)
+            final_answer = str(answer)
+            structured_data = None
         
         return {
-            "answer": answer.content if hasattr(answer, 'content') else answer,
-            "structured_data": answer.structured_output if hasattr(answer, 'structured_output') else None,
+            "answer": final_answer,
+            "final_response": curated_answer,
+            "structured_data": structured_data,
             "debug": {
                 "tier": "admin",
                 "correlation_id": correlation_id,

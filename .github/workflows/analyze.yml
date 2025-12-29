@@ -72,7 +72,7 @@ jobs:
         fi
         
         # Extract answer from JSON response - try final_response first, fallback to answer
-        ANSWER=$(echo "$RESULT" | jq -r '.final_response // .answer // "No answer field"' 2>/dev/null || echo "JSON parse failed: $RESULT")
+        ANSWER=$(echo "$RESULT" | jq -r '.final_response' 2>/dev/null || echo "JSON parse failed: $RESULT")
         
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$ANSWER" >> $GITHUB_OUTPUT

@@ -36,8 +36,7 @@ async def mcp_endpoint(request: JSONRPCRequest):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "template_content": {"type": "string"},
-                                "region": {"type": "string", "default": "us-east-1"}
+                                "template_content": {"type": "string"}
                             },
                             "required": ["template_content"]
                         }
@@ -48,14 +47,12 @@ async def mcp_endpoint(request: JSONRPCRequest):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "template_content": {"type": "string"},
-                                "region": {"type": "string", "default": "us-east-1"},
                                 "custom_specs": {
                                     "type": "string",
                                     "description": "Custom specifications in human language"
                                 }
                             },
-                            "required": ["template_content", "custom_specs"]
+                            "required": ["custom_specs"]
                         }
                     },
                     {
@@ -64,11 +61,9 @@ async def mcp_endpoint(request: JSONRPCRequest):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "stack_name": {"type": "string"},
-                                "account_id": {"type": "string"},
-                                "region": {"type": "string", "default": "us-east-1"}
+                                "stack_name": {"type": "string"}
                             },
-                            "required": ["stack_name", "account_id", "region"]
+                            "required": ["stack_name"]
                         }
                     }
                 ]
@@ -81,18 +76,20 @@ async def mcp_endpoint(request: JSONRPCRequest):
         
         if tool_name == "pricingcalc_estimate_from_cfn":
             template_content = args.get("template_content", "")
-            region = args.get("region", "us-east-1")
+            # Get region from metadata context, default to us-east-1
+            region = request.params.get("metadata", {}).get("region", "us-east-1") if request.params else "us-east-1"
             
             return estimate_costs(template_content, region, {})
         
         elif tool_name == "pricingcalc_estimate_with_custom_specs":
-            template_content = args.get("template_content", "")
-            region = args.get("region", "us-east-1")
             custom_specs = args.get("custom_specs", "")
+            # Get region from metadata context, default to us-east-1  
+            region = request.params.get("metadata", {}).get("region", "us-east-1") if request.params else "us-east-1"
             
             # Parse custom specs and convert to template
             parsed_result = parse_custom_specs(custom_specs)
             
+            template_content = ""
             if "template" in parsed_result:
                 # Use the generated template
                 import json
@@ -102,8 +99,10 @@ async def mcp_endpoint(request: JSONRPCRequest):
         
         elif tool_name == "pricingcalc_estimate_from_stack":
             stack_name = args.get("stack_name", "")
-            account_id = args.get("account_id", "")
-            region = args.get("region", "us-east-1")
+            # Get account_id and region from metadata context
+            metadata = request.params.get("metadata", {}) if request.params else {}
+            account_id = metadata.get("account_id", "")
+            region = metadata.get("region", "us-east-1")
             
             # Get stack template from CloudFormation
             try:

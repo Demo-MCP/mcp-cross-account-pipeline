@@ -15,7 +15,8 @@ def execute_tool(tool_name: str, model_args: dict, ctx: dict) -> dict:
     
     # Step 1: Tool firewall (fail-closed security)
     if not is_tool_allowed(tool_name, tier):
-        return get_denied_tool_response(tool_name, tier)
+        correlation_id = ctx.get("correlation_id", "unknown")
+        return get_denied_tool_response(tool_name, tier, correlation_id)
     
     # Step 2: Resolve required parameters (metadata-first)
     try:
@@ -88,17 +89,31 @@ def call_mcp_tool(service: str, tool_name: str, args: dict, ctx: dict) -> dict:
         response.raise_for_status()
         result = response.json()
         
+        # Debug: Log the actual MCP response structure
+        print(f"[DEBUG] MCP Response for {tool_name}: {result}")
+        
         if result is None:
             return {"error": f"MCP tool {tool_name} returned null response"}
         
-        if "error" in result:
+        if "error" in result and result["error"] is not None:
             error_msg = result["error"]
             if isinstance(error_msg, dict):
                 return {"error": error_msg.get("message", "MCP tool error")}
             else:
                 return {"error": str(error_msg)}
         
-        return {"result": result.get("result", {})}
+        # Return the actual result data, extracting text from MCP content format
+        mcp_result = result.get("result", result)
+        
+        # Handle MCP response format with content array
+        if isinstance(mcp_result, dict) and "content" in mcp_result:
+            content = mcp_result["content"]
+            if isinstance(content, list) and len(content) > 0:
+                first_content = content[0]
+                if isinstance(first_content, dict) and "text" in first_content:
+                    return {"result": first_content["text"]}
+        
+        return {"result": mcp_result}
         
     except requests.exceptions.Timeout:
         return {"error": f"MCP tool {tool_name} timed out"}

@@ -3,7 +3,7 @@ Intent guards to prevent tool substitution
 """
 import re
 from typing import Optional, Dict, Any
-from .param_resolution import extract_pr_number
+from .param_resolution import extract_parameters_with_bedrock
 from .tool_policy import USER_ALLOWED_TOOL_NAMES
 
 def detect_intent(prompt: str) -> str:
@@ -63,7 +63,8 @@ def check_intent_guards(ctx: dict) -> Optional[dict]:
     # PR intent guards
     if intent == "pr":
         # Check if PR number is available
-        pr_number = metadata.get("pr_number") or extract_pr_number(prompt)
+        user_params = extract_parameters_with_bedrock(prompt, "pr_get_diff")
+        pr_number = metadata.get("pr_number") or user_params.get("pr_number")
         if not pr_number:
             return {
                 "error_type": "MISSING_PARAMS",
@@ -88,9 +89,10 @@ def check_intent_guards(ctx: dict) -> Optional[dict]:
         if "stack" in prompt.lower():
             stack_name = metadata.get("stack_name")
             if not stack_name:
-                # Try to extract from prompt
-                from .param_resolution import extract_stack_name
-                stack_name = extract_stack_name(prompt)
+                # Try to extract from prompt using Nova
+                pricing_params = {"stack_name": "string - CloudFormation stack name"}
+                user_params = extract_parameters_with_bedrock(prompt, pricing_params, metadata)
+                stack_name = user_params.get("stack_name")
                 if not stack_name:
                     return {
                         "error_type": "MISSING_PARAMS",

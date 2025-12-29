@@ -23,8 +23,9 @@ USER_ALLOWED_TOOL_NAMES = {
 # Admin tier gets ALL tools (including sensitive ones)
 ADMIN_ONLY_TOOLS = {
     # PR tools (can access sensitive code/diffs)
-    "pr_get_diff",
-    "pr_summarize",
+    "pr_analyze",
+    "pr_get_diff", 
+    "pr_summarize",  # Internal use by pr_analyze orchestrator
     "pr_get_context"
 }
 
