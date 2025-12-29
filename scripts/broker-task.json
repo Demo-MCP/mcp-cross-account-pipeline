@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "broker",
-      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/broker-service:aws-strands-otel",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/broker-service:auth-fixed",
       "essential": true,
       "portMappings": [
         {"containerPort": 8080, "protocol": "tcp"}

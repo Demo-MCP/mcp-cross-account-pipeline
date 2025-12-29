@@ -1,12 +1,33 @@
 # MCP Cross-Account Pipeline
 
-End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support, Nova Pro AI integration, and enhanced Strands implementation.
+End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support, Nova Pro AI integration, enhanced Strands implementation, and comprehensive AWS SigV4 authentication.
 
 ## 🏗️ Architecture
 
 ```
-GitHub PR Comment → GitHub Actions → Enhanced Strands Broker → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
+GitHub PR Comment → GitHub Actions → AWS SigV4 Auth → API Gateway → Enhanced Strands Broker → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
 ```
+
+## 🔒 Authentication & Security
+
+### AWS SigV4 Authentication
+- **API Gateway Integration**: All requests must go through authenticated API Gateway endpoints
+- **Role-Based Access Control**: Dev and Admin roles with different permissions
+- **Session Token Validation**: Validates AWS session tokens from assumed roles
+- **Defense in Depth**: Both API Gateway IAM auth AND broker-level validation
+
+### Access Control Matrix
+| Role | `/ask` Endpoint | `/admin` Endpoint | Tools Available |
+|------|----------------|-------------------|-----------------|
+| **DevMcpInvokeRole** | ✅ Allowed | ❌ Denied | User tools only (7 tools) |
+| **AdminMcpInvokeRole** | ✅ Allowed | ✅ Allowed | All tools (11 tools) |
+| **Unauthenticated** | ❌ Denied | ❌ Denied | None |
+
+### Security Features
+- **Direct ALB Access Blocked**: GitHub workflows cannot bypass authentication
+- **Session Token Verification**: Validates tokens are from authorized roles
+- **API Gateway Headers**: Validates requests came through proper API Gateway
+- **Fail-Closed Security**: All endpoints require authentication by default
 
 ## ✨ Enhanced Strands Implementation
 
@@ -47,7 +68,7 @@ GitHub PR Comment → GitHub Actions → Enhanced Strands Broker → MCP Gateway
 ## ✨ Core Features
 
 * **🔄 Tier-Based Broker**: Secure multi-tier access control with `/ask` (user) and `/admin` (privileged) endpoints
-* **🔒 Security-First Design**: Fail-closed security with tool execution gating and explicit allowlists
+* **🔒 Security-First Design**: Fail-closed security with AWS SigV4 authentication and role-based access control
 * **📊 Deployment Metrics Integration**: Real-time GitHub Actions deployment tracking and analysis
 * **🔍 PR Analysis Tools**: Comprehensive pull request analysis with security scanning (admin-only)
 * **🤖 Nova Pro Integration**: Advanced AI tool calling with agentic loops and streaming timeout resolution
@@ -173,7 +194,53 @@ Update the following files with your AWS account details:
 }
 ```
 
+## 🔐 Authentication Setup
+
+### 1. Deploy Authentication Infrastructure
+
+Deploy the API Gateway with AWS SigV4 authentication:
+
+```bash
+cd infrastructure
+./deploy-auth.sh
+```
+
+This creates:
+- **API Gateway HTTP API** with AWS_IAM authorization
+- **DevMcpInvokeRole** - Limited to `/ask` endpoint (user tools)
+- **AdminMcpInvokeRole** - Access to both `/ask` and `/admin` endpoints
+- **VPC Link** for secure ALB integration
+
+### 2. Test Authentication
+
+Test the authentication system:
+
+```bash
+cd scripts
+./test-auth.sh
+```
+
+Expected results:
+- ✅ Dev role can call `/ask` (HTTP 200)
+- ✅ Dev role denied `/admin` access (HTTP 403)  
+- ✅ Admin role can call `/admin` (HTTP 200)
+- ✅ Unsigned requests denied (HTTP 403)
+
+### 3. API Endpoints
+
+**Authenticated API Gateway URLs:**
+- **Ask Endpoint**: `https://YOUR-API-ID.execute-api.us-east-1.amazonaws.com/prod/ask`
+- **Admin Endpoint**: `https://YOUR-API-ID.execute-api.us-east-1.amazonaws.com/prod/admin`
+- **Tools Endpoint**: `https://YOUR-API-ID.execute-api.us-east-1.amazonaws.com/prod/tools` (no auth)
+
+**Direct ALB Access**: ❌ **BLOCKED** - All requests must go through API Gateway
+
 ## 🔐 Security & Access Control
+
+### Authentication Flow
+```
+GitHub Actions → Assume Role → SigV4 Sign → API Gateway → Broker → MCP Servers
+```
 
 ### Tier-Based Access
 

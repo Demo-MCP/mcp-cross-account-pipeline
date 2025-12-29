@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'MCP Broker Authentication - IAM Roles + API Gateway with SigV4'
+
+Parameters:
+  BrokerListenerArn:
+    Type: String
+    Default: 'arn:aws:elasticloadbalancing:us-east-1:500330120558:listener/app/broker-internal-alb/84bc200374f2a646/2c6f9be6996f68cb'
+    Description: ALB Listener ARN for the broker service
+
+Resources:
+  # ========================================
+  # STAGE 1: IAM Roles
+  # ========================================
+  
+  # Dev Role - Can only call /ask
+  DevMcpInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DevMcpInvokeRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+                - 'arn:aws:iam::500330120558:user/admin'
+                - 'arn:aws:iam::500330120558:role/McpServerTaskRole'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'sts:ExternalId': 'dev-mcp-access'
+      ManagedPolicyArns: []
+      Policies:
+        - PolicyName: DevMcpInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeAskOnly
+                Effect: Allow
+                Action: execute-api:Invoke
+                Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${McpApiGateway}/prod/POST/ask'
+
+  # Admin Role - Can call both /ask and /admin
+  AdminMcpInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AdminMcpInvokeRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+                - 'arn:aws:iam::500330120558:user/admin'
+                - 'arn:aws:iam::500330120558:role/McpServerTaskRole'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'sts:ExternalId': 'admin-mcp-access'
+      ManagedPolicyArns: []
+      Policies:
+        - PolicyName: AdminMcpInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeAskAndAdmin
+                Effect: Allow
+                Action: execute-api:Invoke
+                Resource: 
+                  - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${McpApiGateway}/prod/POST/ask'
+                  - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${McpApiGateway}/prod/POST/admin'
+
+  # ========================================
+  # STAGE 2: CloudWatch Log Groups
+  # ========================================
+  
+  # API Gateway Access Logs
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${AWS::StackName}'
+      RetentionInDays: 7
+
+  # ========================================
+  # STAGE 2 & 3: API Gateway HTTP API
+  # ========================================
+  
+  # Security Group for VPC Link
+  VpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: mcp-vpc-link-sg
+      GroupDescription: Security group for MCP API Gateway VPC Link
+      VpcId: vpc-09935a80be37148d0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          DestinationSecurityGroupId: sg-0190ab5630f4e7309
+          Description: Allow HTTP to broker ALB security group
+      Tags:
+        - Key: Name
+          Value: mcp-vpc-link-sg
+  
+  McpApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: mcp-broker-auth-api
+      Description: 'MCP Broker API with SigV4 Authentication'
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowCredentials: false
+        AllowHeaders:
+          - '*'
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - '*'
+
+  # API Gateway Stage
+  McpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref McpApiGateway
+      StageName: prod
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+        DetailedMetricsEnabled: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","error.message":"$context.error.message","error.messageString":"$context.error.messageString","responseLength":"$context.responseLength","responseLatency":"$context.responseLatency","integrationLatency":"$context.integrationLatency","integrationStatus":"$context.integrationStatus","integrationErrorMessage":"$context.integrationErrorMessage","sourceIp":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent","principalId":"$context.authorizer.principalId"}'
+
+  # VPC Link for internal ALB
+  McpVpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: mcp-broker-vpc-link
+      SubnetIds:
+        - subnet-0d1a30fbc37023fea
+        - subnet-0b296ab71b4c7e39d
+      SecurityGroupIds:
+        - !Ref VpcLinkSecurityGroup
+
+  # Integration to broker ALB
+  McpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref McpApiGateway
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref McpVpcLink
+      IntegrationUri: !Ref BrokerListenerArn
+      PayloadFormatVersion: '1.0'
+      TimeoutInMillis: 29000
+      RequestParameters:
+        overwrite:path: '$request.path'
+
+  # /ask Route (AWS_IAM auth)
+  AskRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref McpApiGateway
+      RouteKey: 'POST /ask'
+      AuthorizationType: AWS_IAM
+      Target: !Sub 'integrations/${McpIntegration}'
+
+  # /admin Route (AWS_IAM auth)
+  AdminRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref McpApiGateway
+      RouteKey: 'POST /admin'
+      AuthorizationType: AWS_IAM
+      Target: !Sub 'integrations/${McpIntegration}'
+
+  # ========================================
+  # STAGE 2: API Gateway Resource Policy
+  # ========================================
+  
+  # Note: Resource policies for HTTP APIs are set via AWS CLI/SDK
+  # This will be applied after stack creation
+
+Outputs:
+  ApiGatewayUrl:
+    Description: API Gateway URL
+    Value: !Sub 'https://${McpApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayUrl'
+
+  ApiGatewayId:
+    Description: API Gateway ID for resource policy
+    Value: !Ref McpApiGateway
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayId'
+
+  DevRoleArn:
+    Description: Dev role ARN for testing
+    Value: !GetAtt DevMcpInvokeRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DevRoleArn'
+
+  AdminRoleArn:
+    Description: Admin role ARN for testing
+    Value: !GetAtt AdminMcpInvokeRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-AdminRoleArn'
+
+  ResourcePolicyCommand:
+    Description: AWS CLI command to apply resource policy
+    Value: !Sub |
+      aws apigatewayv2 update-api --api-id ${McpApiGateway} --policy '{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "AllowDevAskOnly",
+            "Effect": "Allow",
+            "Principal": {"AWS": "${DevMcpInvokeRole.Arn}"},
+            "Action": "execute-api:Invoke",
+            "Resource": "execute-api:/prod/POST/ask"
+          },
+          {
+            "Sid": "AllowAdminAskAndAdmin", 
+            "Effect": "Allow",
+            "Principal": {"AWS": "${AdminMcpInvokeRole.Arn}"},
+            "Action": "execute-api:Invoke",
+            "Resource": ["execute-api:/prod/POST/ask", "execute-api:/prod/POST/admin"]
+          },
+          {
+            "Sid": "DenyAllOtherAdminAccess",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "execute-api:Invoke", 
+            "Resource": "execute-api:/prod/POST/admin",
+            "Condition": {
+              "StringNotEquals": {
+                "aws:PrincipalArn": "${AdminMcpInvokeRole.Arn}"
+              }
+            }
+          }
+        ]
+      }'
