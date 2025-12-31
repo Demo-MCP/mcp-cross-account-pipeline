@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Sample stack for MCP demo - minimal resources only'
 # Added comment for testing
 # Another comment added
+# Dummy commit for testing
 
 Parameters:
   Environment:
