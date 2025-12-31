@@ -3,6 +3,7 @@ Description: 'Sample stack for MCP demo - minimal resources only'
 # Added comment for testing
 # Another comment added
 # Dummy commit for testing
+# Testing pre-push hook
 
 Parameters:
   Environment:
