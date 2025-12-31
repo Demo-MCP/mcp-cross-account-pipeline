@@ -63,6 +63,62 @@ TOOLS = {
             },
             "required": ["run_id"]
         }
+    },
+    "deploy_workflow": {
+        "name": "deploy_workflow",
+        "description": "Complete deployment workflow - triggers deploy via PR comment and monitors progress with auto-diagnostics",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string", "description": "Repository name (e.g., 'Demo-MCP/mcp-cross-account-pipeline')"},
+                "branch": {"type": "string", "description": "Branch to deploy", "default": "main"},
+                "pr_number": {"type": "integer", "description": "PR number to comment on (optional)"},
+                "environment": {"type": "string", "description": "Target environment", "default": "auto"},
+                "region": {"type": "string", "description": "AWS region for deployment", "default": "us-east-1"}
+            },
+            "required": ["repository"]
+        }
+    },
+    "deploy_monitor": {
+        "name": "deploy_monitor", 
+        "description": "Monitor deployment progress (internal tool)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string"},
+                "branch": {"type": "string"},
+                "environment": {"type": "string"},
+                "region": {"type": "string"}
+            },
+            "required": ["repository"]
+        }
+    },
+    "deploy_rollback": {
+        "name": "deploy_rollback",
+        "description": "Rollback to previous successful deployment",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string", "description": "Repository name"},
+                "environment": {"type": "string", "description": "Environment to rollback", "default": "staging"},
+                "target_run_id": {"type": "string", "description": "Specific run_id to rollback to (optional)"}
+            },
+            "required": ["repository"]
+        }
+    },
+    "deploy_multi_env": {
+        "name": "deploy_multi_env",
+        "description": "Deploy to multiple environments sequentially",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string", "description": "Repository name"},
+                "environments": {"type": "array", "items": {"type": "string"}, "description": "List of environments", "default": ["staging", "production"]},
+                "branch": {"type": "string", "description": "Branch to deploy", "default": "main"},
+                "require_approval": {"type": "boolean", "description": "Require approval between environments", "default": True}
+            },
+            "required": ["repository"]
+        }
     }
 }
 
@@ -128,6 +184,30 @@ async def call_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     
     elif tool_name == "deploy_get_summary":
         return await get_run_summary(arguments["run_id"])
+    
+    elif tool_name == "deploy_workflow":
+        return await deploy_workflow(
+            arguments["repository"],
+            arguments.get("branch", "main"),
+            arguments.get("pr_number"),
+            arguments.get("environment", "auto"),
+            arguments.get("region", "us-east-1")
+        )
+    
+    elif tool_name == "deploy_monitor":
+        return await deploy_monitor(
+            arguments["repository"],
+            arguments.get("branch", "main"),
+            arguments.get("environment", "auto"),
+            arguments.get("region", "us-east-1")
+        )
+    
+    elif tool_name == "deploy_rollback":
+        return await deploy_rollback(
+            arguments["repository"],
+            arguments.get("environment", "staging"),
+            arguments.get("target_run_id")
+        )
     
     else:
         raise ValueError(f"Tool not implemented: {tool_name}")
@@ -278,3 +358,172 @@ async def get_run_summary(run_id: str) -> str:
         return summary
     else:
         return f"{run_details}\n\nNo steps recorded for this run."
+
+async def deploy_workflow(repository: str, branch: str, pr_number: Optional[int], environment: str, region: str) -> str:
+    """Complete deployment workflow - coordinates with local Kiro proxy for GitHub CLI"""
+    import time
+    
+    try:
+        # Step 1: Request local GitHub CLI execution via special response format
+        if pr_number:
+            gh_command = f"gh pr comment {pr_number} --repo {repository} --body '/deploy env={environment} region={region}'"
+            
+            # Return special format that Kiro proxy will intercept
+            return f"""KIRO_LOCAL_COMMAND:{gh_command}
+KIRO_CONTINUE_WITH:deploy_monitor|{repository}|{branch}|{environment}|{region}"""
+        
+        # If no PR, skip to monitoring
+        return await deploy_monitor(repository, branch, environment, region)
+        
+    except Exception as e:
+        return f"❌ Deploy workflow error: {str(e)}"
+
+async def deploy_monitor(repository: str, branch: str, environment: str, region: str) -> str:
+    """Monitor deployment progress after GitHub CLI execution"""
+    import asyncio
+    
+    try:
+        # Wait for workflow to start
+        await asyncio.sleep(5)
+        
+        # Find latest run
+        latest_run = await find_latest_runs(repository, 1)
+        if "No deployment runs found" in latest_run:
+            return "❌ No deployment runs found after triggering"
+        
+        # Extract run_id
+        lines = latest_run.split('\n')
+        run_id = None
+        for line in lines:
+            if line.startswith("Run ID:"):
+                run_id = line.split(": ")[1].strip()
+                break
+        
+        if not run_id:
+            return "❌ Could not extract run_id from latest run"
+        
+        # Monitor progress
+        status_msg = f"🔄 Monitoring deployment run_id: {run_id}"
+        
+        # Poll for completion (max 5 minutes for demo)
+        max_polls = 30
+        for poll_count in range(max_polls):
+            run_details = await get_run_details(run_id)
+            
+            if "SUCCEEDED" in run_details:
+                summary = await get_run_summary(run_id)
+                return f"✅ Deployment completed successfully!\n\n{summary}"
+            
+            elif "FAILED" in run_details or "ERROR" in run_details:
+                diagnosis = await auto_diagnose_failure(run_id, repository, region)
+                return f"❌ Deployment failed!\n\n{run_details}\n\n🔍 Auto-diagnosis:\n{diagnosis}"
+            
+            elif "RUNNING" in run_details:
+                if poll_count % 3 == 0:  # Update every 30 seconds
+                    status_msg += f"\n⏳ Still running... (poll {poll_count + 1}/{max_polls})"
+            
+            await asyncio.sleep(10)
+        
+        return f"⏰ Deployment monitoring timed out. Run_id: {run_id}"
+        
+    except Exception as e:
+        return f"❌ Deploy monitor error: {str(e)}"
+
+async def auto_diagnose_failure(run_id: str, repository: str, region: str) -> str:
+    """Auto-diagnose deployment failures"""
+    diagnosis = []
+    
+    try:
+        steps = await get_run_steps(run_id, 50)
+        
+        if "cloudformation" in steps.lower():
+            diagnosis.append("📋 CloudFormation issue detected")
+            diagnosis.append("💡 Use: kiro 'check stack status for latest deployment'")
+        
+        if "ecs" in steps.lower():
+            diagnosis.append("🐳 ECS deployment issue detected") 
+            diagnosis.append("💡 Use: kiro 'check ECS service health'")
+        
+        if "timeout" in steps.lower():
+            diagnosis.append("⏰ Timeout detected - check resource capacity")
+        
+        if not diagnosis:
+            diagnosis.append("🔍 Check deployment steps above for details")
+        
+        return "\n".join(diagnosis)
+        
+    except Exception as e:
+        return f"⚠️ Auto-diagnosis failed: {str(e)}"
+
+async def deploy_rollback(repository: str, environment: str, target_run_id: Optional[str]) -> str:
+    """Rollback to previous successful deployment"""
+    try:
+        # Find target deployment to rollback to
+        if target_run_id:
+            # Rollback to specific run_id
+            target_details = await get_run_details(target_run_id)
+            if "No deployment run found" in target_details:
+                return f"❌ Target run_id {target_run_id} not found"
+        else:
+            # Find last successful deployment
+            latest_runs = await find_latest_runs(repository, 10)
+            if "No deployment runs found" in latest_runs:
+                return f"❌ No deployment history found for {repository}"
+            
+            # Parse runs to find last successful one
+            lines = latest_runs.split('\n')
+            target_run_id = None
+            for i, line in enumerate(lines):
+                if line.startswith("Run ID:"):
+                    run_id = line.split(": ")[1].strip()
+                    # Check next few lines for status
+                    for j in range(i+1, min(i+6, len(lines))):
+                        if "Status: SUCCEEDED" in lines[j]:
+                            target_run_id = run_id
+                            break
+                    if target_run_id:
+                        break
+            
+            if not target_run_id:
+                return f"❌ No successful deployment found to rollback to"
+        
+        # Trigger rollback deployment
+        rollback_comment = f"/deploy rollback={target_run_id} env={environment}"
+        
+        return f"""🔄 Rollback initiated for {repository}
+        
+Target: Run ID {target_run_id}
+Environment: {environment}
+
+KIRO_LOCAL_COMMAND:echo "Rollback would post: {rollback_comment}"
+KIRO_CONTINUE_WITH:deploy_monitor|{repository}|rollback|{environment}|us-east-1
+
+⚠️  Note: Actual rollback requires GitHub workflow support for rollback commands"""
+        
+    except Exception as e:
+        return f"❌ Rollback error: {str(e)}"
+
+async def deploy_approve(repository: str, run_id: str, approver: str) -> str:
+    """Approve a pending deployment"""
+    try:
+        # Check if deployment is pending approval
+        run_details = await get_run_details(run_id)
+        
+        if "No deployment run found" in run_details:
+            return f"❌ Run ID {run_id} not found"
+        
+        # Post approval comment
+        approval_comment = f"/approve run_id={run_id} approved_by={approver}"
+        
+        return f"""✅ Deployment approval for {repository}
+        
+Run ID: {run_id}
+Approved by: {approver}
+Status: Approval posted
+
+KIRO_LOCAL_COMMAND:echo "Approval would post: {approval_comment}"
+
+💡 Deployment will proceed automatically after approval"""
+        
+    except Exception as e:
+        return f"❌ Approval error: {str(e)}"

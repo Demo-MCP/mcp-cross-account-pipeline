@@ -4,7 +4,7 @@ Strands-based agents for tiered access control
 import json
 from strands import Agent, tool
 from strands.models import BedrockModel
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from .tool_policy import USER_ALLOWED_TOOL_NAMES, ALL_ADMIN_TOOLS, is_tool_allowed
 from .tool_wrappers import execute_tool
 from .prompts import USER_AGENT_PROMPT, ADMIN_AGENT_PROMPT, TOOL_DESCRIPTIONS
@@ -136,6 +136,30 @@ def deploy_get_summary_tool(run_id: str) -> str:
         result = execute_tool("deploy_get_summary", {"run_id": run_id}, _tool_context)
     return format_tool_result("deploy_get_summary", result)
 
+@tool(name="deploy_workflow", description="Complete deployment workflow with auto-diagnostics")
+def deploy_workflow_tool(repository: str, branch: str = "main", pr_number: Optional[int] = None, environment: str = "auto", region: str = "us-east-1") -> str:
+    """Complete deployment workflow"""
+    with measure_execution("deploy_workflow", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_workflow", {
+            "repository": repository,
+            "branch": branch, 
+            "pr_number": pr_number,
+            "environment": environment,
+            "region": region
+        }, _tool_context)
+    return format_tool_result("deploy_workflow", result)
+
+@tool(name="deploy_rollback", description="Rollback to previous successful deployment")
+def deploy_rollback_tool(repository: str, environment: str = "staging", target_run_id: Optional[str] = None) -> str:
+    """Rollback deployment"""
+    with measure_execution("deploy_rollback", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_rollback", {
+            "repository": repository,
+            "environment": environment,
+            "target_run_id": target_run_id
+        }, _tool_context)
+    return format_tool_result("deploy_rollback", result)
+
 @tool(name="pricingcalc_estimate_from_cfn", description="Calculate pricing from CloudFormation template")
 def pricingcalc_estimate_from_cfn_tool(template_content: str) -> str:
     """Estimate pricing from CloudFormation template"""
@@ -216,6 +240,20 @@ def pr_get_diff_tool(repo: str, pr_number: int, actor: str, run_id: str, options
     return format_tool_result("pr_get_diff", result)
 
 @tool(name="pr_summarize", description="Analyze PR security by repo, pr_number, actor, run_id, diff, changed_files, and optional options")
+def pr_summarize_tool(repo: str, pr_number: int, actor: str, run_id: str, diff: str, changed_files: List[str], options: dict = None) -> str:
+    """Analyze PR security"""
+    with measure_execution("pr_summarize", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("pr_summarize", {
+            "repo": repo, 
+            "pr_number": pr_number, 
+            "actor": actor, 
+            "run_id": run_id, 
+            "diff": diff, 
+            "changed_files": changed_files, 
+            "options": options
+        }, _tool_context)
+    return format_tool_result("pr_summarize", result)
+
 @tool(name="deploy_run", description="Run deployment workflow by repo, workflow, and optional branch")
 def deploy_run_tool(repo: str, workflow: str, branch: str = "main") -> str:
     """Run deployment workflow"""
@@ -405,6 +443,8 @@ ALL_TOOL_FUNCTIONS = {
     "deploy_find_latest": deploy_find_latest_tool,
     "deploy_find_active": deploy_find_active_tool,
     "deploy_get_summary": deploy_get_summary_tool,
+    "deploy_workflow": deploy_workflow_tool,
+    "deploy_rollback": deploy_rollback_tool,
     "pricingcalc_estimate_from_cfn": pricingcalc_estimate_from_cfn_tool,
     "pricingcalc_estimate_with_custom_specs": pricingcalc_estimate_with_custom_specs_tool,
     "pricingcalc_estimate_from_stack": pricingcalc_estimate_from_stack_tool,
