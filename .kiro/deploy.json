@@ -1,0 +1,51 @@
+{
+  "environments": {
+    "main": {
+      "account": "prod",
+      "region": "us-east-1",
+      "auto_deploy": false,
+      "require_approval": true
+    },
+    "dev": {
+      "account": "staging", 
+      "region": "us-east-1",
+      "auto_deploy": true,
+      "require_approval": false
+    },
+    "staging": {
+      "account": "staging",
+      "region": "us-west-2", 
+      "auto_deploy": true,
+      "require_approval": false
+    }
+  },
+  "branch_mapping": {
+    "main": "production",
+    "master": "production",
+    "dev": "staging",
+    "develop": "staging",
+    "staging": "staging"
+  },
+  "health_checks": {
+    "timeout": 300,
+    "endpoints": ["/health", "/ready"]
+  },
+  "notifications": {
+    "slack_webhook": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+    "teams_webhook": "",
+    "email": ["devops@company.com"],
+    "notify_on": ["success", "failure", "approval_required"]
+  },
+  "deployment_policies": {
+    "production": {
+      "require_approval": true,
+      "approvers": ["@devops-team", "@tech-leads"],
+      "business_hours_only": true,
+      "rollback_window": "24h"
+    },
+    "staging": {
+      "require_approval": false,
+      "auto_rollback_on_failure": true
+    }
+  }
+}
