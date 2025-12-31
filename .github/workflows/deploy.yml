@@ -26,6 +26,20 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       
+    - name: Post deployment started with run_id
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        COMMENT="${{ github.event.comment.body }}"
+        ENVIRONMENT=$(echo "$COMMENT" | sed -n 's|^/deploy \([^ ]*\).*|\1|p')
+        ENVIRONMENT=${ENVIRONMENT:-dev}
+        
+        curl -X POST \
+          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+          -d "{\"body\":\"🚀 **Deployment Started**\\n\\n**Run Details:**\\n- Run ID: \`${{ github.run_id }}\`\\n- Repository: \`${{ github.repository }}\`\\n- Branch: \`${{ github.ref_name }}\`\\n- PR Number: \`${{ github.event.issue.number }}\`\\n- Environment: \`$ENVIRONMENT\`\\n- Region: \`us-east-1\`\\n- Workflow: \`${{ github.workflow }}\`\\n- Status: \`RUNNING\`\\n- Started: $(date -Iseconds)\"}"
+      
     - name: Extract deploy parameters
       id: params
       run: |
