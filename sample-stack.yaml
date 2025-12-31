@@ -1,6 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Sample stack for MCP demo - minimal resources only'
 # Updated for dev branch testing - 2025-12-31
+# Trigger commit for Kiro actions testing
 
 Parameters:
   Environment:
