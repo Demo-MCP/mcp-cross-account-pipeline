@@ -136,6 +136,18 @@ def deploy_get_summary_tool(run_id: str) -> str:
         result = execute_tool("deploy_get_summary", {"run_id": run_id}, _tool_context)
     return format_tool_result("deploy_get_summary", result)
 
+@tool(name="deploy_status", description="Check deployment status - auto-detects latest run_id from GitHub comments if not provided")
+def deploy_status_tool(repository: str, pr_number: Optional[int] = None, limit: int = 3, run_id: Optional[str] = None) -> str:
+    """Check deployment status"""
+    with measure_execution("deploy_status", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
+        result = execute_tool("deploy_status", {
+            "repository": repository,
+            "pr_number": pr_number,
+            "limit": limit,
+            "run_id": run_id
+        }, _tool_context)
+    return format_tool_result("deploy_status", result)
+
 @tool(name="deploy_workflow", description="Complete deployment workflow with auto-diagnostics")
 def deploy_workflow_tool(repository: str, branch: str = "main", pr_number: Optional[int] = None, environment: str = "auto", region: str = "us-east-1") -> str:
     """Complete deployment workflow"""
@@ -260,13 +272,6 @@ def deploy_run_tool(repo: str, workflow: str, branch: str = "main") -> str:
     with measure_execution("deploy_run", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
         result = execute_tool("deploy_run", {"repo": repo, "workflow": workflow, "branch": branch}, _tool_context)
     return format_tool_result("deploy_run", result)
-
-@tool(name="deploy_status", description="Check deployment status by repo and run_id")
-def deploy_status_tool(repo: str, run_id: str) -> str:
-    """Check deployment status"""
-    with measure_execution("deploy_status", _tool_context.get("tier", "unknown"), _tool_context.get("metadata", {})):
-        result = execute_tool("deploy_status", {"repo": repo, "run_id": run_id}, _tool_context)
-    return format_tool_result("deploy_status", result)
 
 @tool(name="pricingcalc_estimate", description="Calculate AWS pricing by service, region, and additional parameters")
 def pricingcalc_estimate_tool(service: str, region: str = "us-east-1", **kwargs) -> str:
@@ -443,6 +448,7 @@ ALL_TOOL_FUNCTIONS = {
     "deploy_find_latest": deploy_find_latest_tool,
     "deploy_find_active": deploy_find_active_tool,
     "deploy_get_summary": deploy_get_summary_tool,
+    "deploy_status": deploy_status_tool,
     "deploy_workflow": deploy_workflow_tool,
     "deploy_rollback": deploy_rollback_tool,
     "pricingcalc_estimate_from_cfn": pricingcalc_estimate_from_cfn_tool,

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "aws-mcp-broker": {
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/server-fetch"
+      ],
+      "env": {
+        "FETCH_BASE_URL": "https://d0yrd186v6.execute-api.us-east-1.amazonaws.com/prod",
+        "FETCH_METHOD": "POST",
+        "FETCH_HEADERS": "{\"Content-Type\": \"application/json\", \"Authorization\": \"AWS4-HMAC-SHA256\"}",
+        "AWS_PROFILE": "default"
+      }
+    }
+  }
+}

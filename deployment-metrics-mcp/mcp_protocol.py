@@ -119,6 +119,20 @@ TOOLS = {
             },
             "required": ["repository"]
         }
+    },
+    "deploy_status": {
+        "name": "deploy_status",
+        "description": "Check deployment status - auto-detects latest run_id from GitHub comments if not provided", 
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string", "description": "Repository name (e.g., 'Demo-MCP/mcp-cross-account-pipeline')"},
+                "pr_number": {"type": "integer", "description": "PR number to check for run_id in comments (optional)"},
+                "limit": {"type": "integer", "description": "Number of recent deployments to check", "default": 3},
+                "run_id": {"type": "string", "description": "Specific run ID to check (optional - auto-detects from GitHub comments if not provided)"}
+            },
+            "required": ["repository"]
+        }
     }
 }
 
@@ -207,6 +221,14 @@ async def call_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             arguments["repository"],
             arguments.get("environment", "staging"),
             arguments.get("target_run_id")
+        )
+    
+    elif tool_name == "deploy_status":
+        return await deploy_status(
+            arguments["repository"],
+            arguments.get("pr_number"),
+            arguments.get("limit", 3),
+            arguments.get("run_id")
         )
     
     else:
@@ -360,20 +382,40 @@ async def get_run_summary(run_id: str) -> str:
         return f"{run_details}\n\nNo steps recorded for this run."
 
 async def deploy_workflow(repository: str, branch: str, pr_number: Optional[int], environment: str, region: str) -> str:
-    """Complete deployment workflow - coordinates with local Kiro proxy for GitHub CLI"""
+    """Complete deployment workflow - starts deployment and returns immediately"""
     import time
     
     try:
         # Step 1: Request local GitHub CLI execution via special response format
         if pr_number:
-            gh_command = f"gh pr comment {pr_number} --repo {repository} --body '/deploy env={environment} region={region}'"
+            gh_command = f"gh pr comment {pr_number} --repo {repository} --body '/deploy {environment}'"
             
-            # Return special format that Kiro proxy will intercept
-            return f"""KIRO_LOCAL_COMMAND:{gh_command}
-KIRO_CONTINUE_WITH:deploy_monitor|{repository}|{branch}|{environment}|{region}"""
+            # Return immediately with tracking instructions
+            return f"""🚀 **Deployment Started**
+
+**Details:**
+- Repository: {repository}
+- Branch: {branch}
+- Environment: {environment}
+- PR: #{pr_number}
+- Region: {region}
+
+⏳ **Deployment is running in background...**
+
+**Track Progress:**
+- Use: `deploy_status {repository}` to check latest status
+- Use: `deploy_get_run <run_id>` when run_id appears in PR comments
+- Check PR #{pr_number} for run_id updates from GitHub Actions
+
+KIRO_LOCAL_COMMAND:{gh_command}"""
         
-        # If no PR, skip to monitoring
-        return await deploy_monitor(repository, branch, environment, region)
+        # If no PR, return guidance
+        return f"""❌ **No PR Found**
+
+To deploy {repository} to {environment}:
+1. Create a PR from {branch} branch
+2. Run deploy_workflow again with PR number
+3. Or manually post `/deploy {environment}` comment on existing PR"""
         
     except Exception as e:
         return f"❌ Deploy workflow error: {str(e)}"
@@ -454,6 +496,208 @@ async def auto_diagnose_failure(run_id: str, repository: str, region: str) -> st
         
     except Exception as e:
         return f"⚠️ Auto-diagnosis failed: {str(e)}"
+
+async def get_run_steps(run_id: str, limit: int = 200) -> str:
+    """Get deployment steps for a specific run_id"""
+    try:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            
+            # Query job_step_metrics table for steps
+            cur.execute("""
+                SELECT step_name, step_index, step_status, step_start_time, 
+                       step_end_time, step_duration_seconds
+                FROM job_step_metrics 
+                WHERE run_id = %s 
+                ORDER BY step_index ASC
+                LIMIT %s
+            """, (run_id, limit))
+            
+            steps = cur.fetchall()
+            
+            if not steps:
+                # No step-level data, try to get job-level info instead
+                cur.execute("""
+                    SELECT workflow_name, job_name, job_status, job_start_time, 
+                           job_end_time, job_duration_seconds, job_error_message
+                    FROM job_metrics 
+                    WHERE run_id = %s
+                """, (run_id,))
+                
+                job_info = cur.fetchone()
+                
+                if not job_info:
+                    return f"❌ No deployment data found for run_id: {run_id}"
+                
+                workflow_name, job_name, job_status, start_time, end_time, duration, error_msg = job_info
+                
+                result = [f"📋 **Deployment Info for Run {run_id}**\n"]
+                result.append(f"**Workflow:** {workflow_name}")
+                result.append(f"**Job:** {job_name}")
+                result.append(f"**Status:** {job_status}")
+                result.append(f"**Started:** {start_time}")
+                if end_time:
+                    result.append(f"**Ended:** {end_time}")
+                if duration:
+                    result.append(f"**Duration:** {duration}s")
+                if error_msg:
+                    result.append(f"**Error:** {error_msg}")
+                
+                result.append(f"\n⚠️ **Note:** Step-level details not available")
+                result.append(f"💡 **Tip:** Check GitHub Actions tab for detailed step logs")
+                
+                return "\n".join(result)
+            
+            # Format steps output
+            result = [f"📋 **Deployment Steps for Run {run_id}**\n"]
+            
+            for step_name, step_index, step_status, start_time, end_time, duration in steps:
+                status_emoji = "✅" if step_status == "SUCCEEDED" else "❌" if step_status == "FAILED" else "⏳"
+                
+                result.append(f"{status_emoji} **Step {step_index + 1}: {step_name}**")
+                result.append(f"   Status: {step_status}")
+                
+                if start_time:
+                    result.append(f"   Started: {start_time}")
+                if end_time:
+                    result.append(f"   Ended: {end_time}")
+                if duration:
+                    result.append(f"   Duration: {duration}s")
+                result.append("")
+            
+            return "\n".join(result)
+            
+    except Exception as e:
+        logger.error(f"Error getting steps for run_id {run_id}: {e}")
+        return f"❌ Error retrieving steps: {str(e)}"
+
+async def get_latest_run_id_from_comments(repository: str, pr_number: Optional[int] = None) -> Optional[str]:
+    """Extract latest run_id from GitHub PR comments - optimized to read only last comment"""
+    try:
+        import boto3
+        import requests
+        import re
+        
+        # Get GitHub token from Secrets Manager
+        secrets_client = boto3.client('secretsmanager')
+        secret_response = secrets_client.get_secret_value(SecretId='github-token')
+        github_token = secret_response['SecretString']
+        
+        # Parse repository (format: owner/repo)
+        if '/' not in repository:
+            return None
+        owner, repo = repository.split('/', 1)
+        
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        # If PR number provided, check only that PR
+        if pr_number:
+            prs_to_check = [{'number': pr_number}]
+        else:
+            # Get only the most recent PR for efficiency
+            prs_url = f'https://api.github.com/repos/{owner}/{repo}/pulls?state=all&sort=updated&per_page=1'
+            prs_response = requests.get(prs_url, headers=headers, timeout=5)
+            
+            if prs_response.status_code != 200:
+                return None
+            prs_to_check = prs_response.json()
+        
+        # Search for deployment comments with run_id (only last comment)
+        run_id_pattern = r'Run ID: `([^`]+)`'
+        
+        for pr in prs_to_check:
+            pr_number = pr['number']
+            # Only get the LAST comment for efficiency
+            comments_url = f'https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=1&sort=created&direction=desc'
+            comments_response = requests.get(comments_url, headers=headers, timeout=5)
+            
+            if comments_response.status_code == 200:
+                comments = comments_response.json()
+                
+                for comment in comments:
+                    if 'deployment started' in comment['body'].lower() or 'run id:' in comment['body'].lower():
+                        match = re.search(run_id_pattern, comment['body'])
+                        if match:
+                            return match.group(1)
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error reading GitHub comments: {e}")
+        return None
+
+async def deploy_status(repository: str, pr_number: Optional[int] = None, limit: int = 3, run_id: Optional[str] = None) -> str:
+    """Check status of deployments - auto-detects latest run_id from GitHub comments if not provided"""
+    try:
+        # If run_id provided, get specific run details
+        if run_id:
+            run_details = await get_run_details(run_id)
+            if "No deployment run found" in run_details:
+                return f"❌ **Run {run_id} not found**\n\nDouble-check the run_id or use `deploy_status {repository}` to see recent deployments."
+            
+            return f"📊 **Deployment Status for Run {run_id}**\n\n{run_details}\n\n💡 **Quick Actions:**\n- `deploy_get_steps {run_id}` - Get deployment steps\n- `deploy_workflow` - Start new deployment"
+        
+        # Try to auto-detect run_id from GitHub comments
+        detected_run_id = await get_latest_run_id_from_comments(repository, pr_number)
+        
+        if detected_run_id:
+            run_details = await get_run_details(detected_run_id)
+            if "No deployment run found" not in run_details:
+                return f"📊 **Latest Deployment Status** (auto-detected from PR comments)\n\n{run_details}\n\n💡 **Quick Actions:**\n- `deploy_get_steps {detected_run_id}` - Get deployment steps\n- `deploy_workflow` - Start new deployment"
+        
+        # Fallback: Get latest deployment runs from database
+        latest_runs = await find_latest_runs(repository, limit)
+        
+        if "No deployment runs found" in latest_runs:
+            return f"📊 **No deployments found for {repository}**\n\nTo start a deployment:\n- Use: `deploy_workflow` with repository and PR details"
+        
+        # Parse and enhance the status information
+        lines = latest_runs.split('\n')
+        enhanced_status = [f"📊 **Latest Deployments for {repository}**\n"]
+        
+        current_run = {}
+        for line in lines:
+            if line.startswith("Run ID:"):
+                if current_run:
+                    # Process previous run
+                    status_emoji = "✅" if current_run.get("status") == "SUCCEEDED" else "❌" if "FAILED" in current_run.get("status", "") else "⏳"
+                    enhanced_status.append(f"{status_emoji} **Run {current_run.get('run_id', 'Unknown')}** - {current_run.get('status', 'Unknown')}")
+                    if current_run.get("branch"):
+                        enhanced_status.append(f"   🌿 Branch: {current_run.get('branch')}")
+                    if current_run.get("start_time"):
+                        enhanced_status.append(f"   🕐 Started: {current_run.get('start_time')}")
+                    enhanced_status.append("")
+                
+                # Start new run
+                current_run = {"run_id": line.split(": ")[1].strip()}
+            elif line.startswith("  Status:"):
+                current_run["status"] = line.split(": ")[1].strip()
+            elif line.startswith("  Branch:"):
+                current_run["branch"] = line.split(": ")[1].strip()
+            elif line.startswith("  Start:"):
+                current_run["start_time"] = line.split(": ")[1].strip()
+        
+        # Process last run
+        if current_run:
+            status_emoji = "✅" if current_run.get("status") == "SUCCEEDED" else "❌" if "FAILED" in current_run.get("status", "") else "⏳"
+            enhanced_status.append(f"{status_emoji} **Run {current_run.get('run_id', 'Unknown')}** - {current_run.get('status', 'Unknown')}")
+            if current_run.get("branch"):
+                enhanced_status.append(f"   🌿 Branch: {current_run.get('branch')}")
+            if current_run.get("start_time"):
+                enhanced_status.append(f"   🕐 Started: {current_run.get('start_time')}")
+        
+        enhanced_status.append(f"\n💡 **Quick Actions:**")
+        enhanced_status.append(f"- `deploy_get_run <run_id>` - Get detailed run info")
+        enhanced_status.append(f"- `deploy_get_steps <run_id>` - Get deployment steps")
+        enhanced_status.append(f"- `deploy_workflow` - Start new deployment")
+        
+        return "\n".join(enhanced_status)
+        
+    except Exception as e:
+        return f"❌ Status check error: {str(e)}"
 
 async def deploy_rollback(repository: str, environment: str, target_run_id: Optional[str]) -> str:
     """Rollback to previous successful deployment"""

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "aws-mcp-broker": {
+      "command": "./run-mcp.sh",
+      "env": {
+        "AWS_PROFILE": "default",
+        "AWS_ROLE_ARN": "arn:aws:iam::500330120558:role/DevMcpInvokeRole",
+        "AWS_ROLE_EXTERNAL_ID": "dev-mcp-access",
+        "AWS_REGION": "us-east-1",
+        "FETCH_BASE_URL": "https://d0yrd186v6.execute-api.us-east-1.amazonaws.com/prod"
+      }
+    }
+  }
+}
