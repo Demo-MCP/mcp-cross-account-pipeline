@@ -4,6 +4,11 @@ on:
   issue_comment:
     types: [created]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   deploy:
     if: (github.event.issue.pull_request || github.event.pull_request) && startsWith(github.event.comment.body, '/deploy')
@@ -26,6 +31,16 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       
+    - name: Step Metrics - Checkout Complete
+      if: always()
+      run: |
+        aws lambda invoke \
+          --function-name mcp-metrics-writer \
+          --cli-binary-format raw-in-base64-out \
+          --payload '{"action":"job_step","step_id":"${{ github.run_id }}-checkout","run_id":"${{ github.run_id }}","step_name":"Checkout","step_index":1,"step_status":"SUCCEEDED","step_start_time":"'$(date -Iseconds)'","step_end_time":"'$(date -Iseconds)'","step_duration_seconds":1}' \
+          --region us-east-1 \
+          /tmp/checkout_step.json
+      
     - name: Extract deploy parameters
       id: params
       run: |
@@ -33,14 +48,50 @@ jobs:
         STACK_NAME=$(echo "$COMMENT" | sed -n 's|^/deploy \([^ ]*\).*|\1|p')
         echo "stack_name=${STACK_NAME:-sample-demo}" >> $GITHUB_OUTPUT
         
+    - name: Step Metrics - Parameters Extracted
+      if: always()
+      run: |
+        STEP_STATUS="SUCCEEDED"
+        if [ "${{ job.status }}" == "failure" ]; then
+          STEP_STATUS="FAILED"
+        fi
+        
+        aws lambda invoke \
+          --function-name mcp-metrics-writer \
+          --cli-binary-format raw-in-base64-out \
+          --payload '{"action":"job_step","step_id":"${{ github.run_id }}-params","run_id":"${{ github.run_id }}","step_name":"Extract Parameters","step_index":2,"step_status":"'$STEP_STATUS'","step_start_time":"'$(date -Iseconds)'","step_end_time":"'$(date -Iseconds)'","step_duration_seconds":1}' \
+          --region us-east-1 \
+          /tmp/params_step.json
+        
     - name: Deploy CloudFormation stack
       run: |
+        DEPLOY_START=$(date +%s)
+        
         aws cloudformation deploy \
           --template-file sample-stack.yaml \
           --stack-name ${{ steps.params.outputs.stack_name }} \
           --parameter-overrides Environment=demo \
           --region us-east-1 \
           --no-fail-on-empty-changeset
+          
+        DEPLOY_END=$(date +%s)
+        DEPLOY_DURATION=$((DEPLOY_END - DEPLOY_START))
+        echo "DEPLOY_DURATION=$DEPLOY_DURATION" >> $GITHUB_ENV
+        
+    - name: Step Metrics - CloudFormation Deploy
+      if: always()
+      run: |
+        STEP_STATUS="SUCCEEDED"
+        if [ "${{ job.status }}" == "failure" ]; then
+          STEP_STATUS="FAILED"
+        fi
+        
+        aws lambda invoke \
+          --function-name mcp-metrics-writer \
+          --cli-binary-format raw-in-base64-out \
+          --payload '{"action":"job_step","step_id":"${{ github.run_id }}-deploy","run_id":"${{ github.run_id }}","step_name":"CloudFormation Deploy","step_index":3,"step_status":"'$STEP_STATUS'","step_start_time":"'$(date -Iseconds -d "@$(($(date +%s) - ${DEPLOY_DURATION:-30}))")'","step_end_time":"'$(date -Iseconds)'","step_duration_seconds":'${DEPLOY_DURATION:-30}'}' \
+          --region us-east-1 \
+          /tmp/deploy_step.json
           
     - name: Comment on PR
       env:
@@ -51,6 +102,21 @@ jobs:
           -H "Accept: application/vnd.github.v3+json" \
           "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
           -d "{\"body\":\"✅ Deployed stack **${{ steps.params.outputs.stack_name }}** in region **us-east-1**\"}"
+
+    - name: Step Metrics - PR Comment
+      if: always()
+      run: |
+        STEP_STATUS="SUCCEEDED"
+        if [ "${{ job.status }}" == "failure" ]; then
+          STEP_STATUS="FAILED"
+        fi
+        
+        aws lambda invoke \
+          --function-name mcp-metrics-writer \
+          --cli-binary-format raw-in-base64-out \
+          --payload '{"action":"job_step","step_id":"${{ github.run_id }}-comment","run_id":"${{ github.run_id }}","step_name":"Post PR Comment","step_index":4,"step_status":"'$STEP_STATUS'","step_start_time":"'$(date -Iseconds)'","step_end_time":"'$(date -Iseconds)'","step_duration_seconds":1}' \
+          --region us-east-1 \
+          /tmp/comment_step.json
 
     - name: Job End Metrics
       if: always()

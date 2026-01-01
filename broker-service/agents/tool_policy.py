@@ -9,6 +9,7 @@ USER_ALLOWED_TOOL_NAMES = {
     "deploy_get_summary", 
     "deploy_get_run",
     "deploy_get_steps",
+    "deploy_status",
     
     # ECS tools (read-only)
     "ecs_call_tool",

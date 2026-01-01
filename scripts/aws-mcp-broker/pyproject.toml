@@ -1,0 +1,11 @@
+[project]
+name = "aws-mcp-broker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "boto3>=1.42.19",
+    "mcp[cli]>=1.25.0",
+    "requests>=2.32.5",
+]

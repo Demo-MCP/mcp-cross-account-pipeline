@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "deployment-metrics-mcp",
-      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/deployment-metrics-mcp:latest",
+      "image": "500330120558.dkr.ecr.us-east-1.amazonaws.com/deployment-metrics-mcp:strands-kiro-v1.0.1",
       "portMappings": [
         {
           "containerPort": 8080,
