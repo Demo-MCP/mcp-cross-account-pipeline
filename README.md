@@ -5,8 +5,21 @@ End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MC
 ## 🏗️ Architecture
 
 ```
-GitHub PR Comment → GitHub Actions → AWS SigV4 Auth → API Gateway → Enhanced Strands Broker → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
+┌─ GitHub PR Comment ─┐    ┌─ Kiro CLI (Local) ─┐
+│                     │    │                    │
+▼                     ▼    ▼                    ▼
+GitHub Actions → AWS SigV4 Auth → API Gateway → Enhanced Strands Broker → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
+                      ▲                                                                    ▲
+                      │                                                                    │
+                      └─ Local MCP Server ──────────────────────────────────────────────┘
+                         (aws-mcp-broker)
 ```
+
+**Integration Paths:**
+- **GitHub Actions**: PR comments trigger authenticated workflows
+- **Kiro CLI**: Local development with direct MCP server access
+- **API Gateway**: Centralized authentication and routing
+- **MCP Protocol**: Standardized tool integration across all paths
 
 ## 🔒 Authentication & Security
 
@@ -173,6 +186,53 @@ The broker service now provides a single, intelligent entry point for all deploy
 - **Clean Output**: Removed `.answer` fallback for cleaner GitHub workflow results
 - **Structured Response**: Consistent JSON response format
 - **Error Handling**: Graceful handling of analysis failures with detailed error messages
+
+## 🖥️ Kiro CLI Integration
+
+### Local Development with MCP
+
+The pipeline now includes **Kiro CLI integration** for local development and testing, providing direct access to deployment orchestration tools through a local MCP server.
+
+**🔧 Key Features:**
+- **Local MCP Server**: Run deployment tools locally without GitHub Actions
+- **Automatic Status Updates**: `deploy_local` automatically calls `deploy_status` after posting PR comments
+- **Cross-Account Authentication**: Uses AWS role assumption for secure API access
+- **Real-Time Deployment Tracking**: Monitor deployment progress directly from terminal
+- **Fallback Protection**: Graceful degradation if automatic status calls fail
+
+**🛠️ Available Tools:**
+- `deploy_local <repo> <branch> <environment>` - Post deployment comment and get status
+- `deploy_status <repo>` - Check current deployment status
+- `deploy_get_run <run_id>` - Get detailed run information
+- `deploy_list_runs <repo>` - List recent deployment runs
+
+**⚡ Quick Setup:**
+```bash
+# 1. Run setup script
+./scripts/setup-kiro-mcp.sh
+
+# 2. Start Kiro CLI
+kiro-cli chat
+
+# 3. Deploy and monitor
+deploy_local Demo-MCP/mcp-cross-account-pipeline feature-branch dev
+```
+
+**🔄 Workflow Enhancement:**
+- **Before**: Manual PR comment → Manual status check → Manual run details
+- **After**: Single command → Automatic status → Integrated monitoring
+
+**📁 Integration Files:**
+- `scripts/aws-mcp-broker/` - Complete MCP server implementation
+- `scripts/setup-kiro-mcp.sh` - Automated setup script
+- `scripts/kiro-mcp-config.json` - Configuration template
+- `KIRO_INTEGRATION.md` - Detailed integration documentation
+
+**🔒 Security:**
+- Uses same AWS role assumption as GitHub Actions
+- Validates repository access permissions
+- Secure credential handling through AWS profiles
+- No hardcoded secrets or tokens
 
 ## 🚀 Quick Deploy from Scratch
 
