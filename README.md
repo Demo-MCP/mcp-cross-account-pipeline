@@ -4,15 +4,51 @@ End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MC
 
 ## 🏗️ Architecture
 
-```
-┌─ GitHub PR Comment ─┐    ┌─ Kiro CLI (Local) ─┐
-│                     │    │                    │
-▼                     ▼    ▼                    ▼
-GitHub Actions → AWS SigV4 Auth → API Gateway → Enhanced Strands Broker → MCP Gateway → MCP Servers → AWS APIs → Nova Pro Analysis
-                      ▲                                                                    ▲
-                      │                                                                    │
-                      └─ Local MCP Server ──────────────────────────────────────────────┘
-                         (aws-mcp-broker)
+```mermaid
+graph LR
+    subgraph DevAccount [Developer Laptop]
+        Client[AWS Kiro / IDE]
+        Role[Developer IAM role]
+    end
+
+    subgraph GitHubActions [GitHub Actions Workflow]
+        PullRequestComments
+        /Analyze[Admin Tools]
+        /Ask[User Tools]
+        
+    end
+
+    subgraph OpsAccount [Ops Account - Public]
+        NLB[Api Gateway  <br/> Port 443]
+        Fargate[VPC Link <br/> IAM Auth]
+    end
+
+    subgraph OpsAccountPrivate [Ops Account - Private VPC]
+        BrokerALB[Internal Broker ALB]
+        BrokerSvc[Broker Container <br/> FastAPI + Strands Agent + Otel + Ground Truth + Sigv4]
+        MCPALB[Internal MCP ALB]
+        
+        subgraph MCPServices [MCP Service Containers]
+            Pricing[Pricing Calc MCP]
+            PR[PR Context MCP]
+            Metrics[Deployment Metrics MCP]
+            ECS[ECS Read Only MCP]
+            IAC[IAC Read Only MCP]
+        end
+    end
+
+    Client -- HTTPS/SigV4 --> NLB
+    GitHubActions -- Workflow Metadata --> NLB
+    NLB --> Fargate
+    Fargate -- Verified IAM Identity --> BrokerALB
+    BrokerALB -- /ask ( User Tools )--> BrokerSvc
+    BrokerALB -- /admin ( Admin Tools )--> BrokerSvc
+    BrokerSvc -- Orchestrated Tool Call --> MCPALB
+    MCPALB --> Pricing
+    MCPALB --> PR
+    MCPALB --> Metrics
+    MCPALB --> ECS
+    MCPALB --> IAC
 ```
 
 **Integration Paths:**
@@ -216,6 +252,58 @@ kiro-cli chat
 
 # 3. Deploy and monitor
 deploy_local Demo-MCP/mcp-cross-account-pipeline feature-branch dev
+```
+
+### 📺 Example Terminal Session
+
+```bash
+$ kiro-cli chat
+✓ aws-mcp-broker loaded in 2.73 s
+
+> cd /Users/local_user/Downloads/mcp-cross-account-pipeline
+/Users/local_user/Downloads/mcp-cross-account-pipeline
+
+> deploy to dev
+Deployment to dev environment has been initiated! 
+
+The deployment is running in the background for:
+- Repository: Demo-MCP/mcp-cross-account-pipeline
+- Branch: dev  
+- PR: #15
+
+You can track progress using:
+- deploy_status Demo-MCP/mcp-cross-account-pipeline for latest status
+- Check PR #15 for the run_id when it appears in GitHub Actions comments
+
+> deploy_status Demo-MCP/mcp-cross-account-pipeline
+Current deployment status for Demo-MCP/mcp-cross-account-pipeline:
+
+Latest Deployments:
+
+⏳ Run 20641130601 - RUNNING
+- Branch: main
+- Started: 2026-01-01 15:32:42+00:00
+
+✅ Run 20639402793 - SUCCEEDED  
+- Branch: main
+- Started: 2026-01-01 13:31:30+00:00
+
+The most recent deployment (Run 20641130601) is currently running. 
+Use deploy_get_run 20641130601 for more details.
+
+> deploy_get_run 20641130601
+Deployment Run 20641130601 Details:
+
+✅ Status: SUCCEEDED
+- Repository: Demo-MCP/mcp-cross-account-pipeline
+- Branch: main
+- Workflow: Deploy Infrastructure
+- Duration: 46 seconds
+- Started: 2026-01-01 15:32:42+00:00
+- Ended: 2026-01-01 15:33:28+00:00
+- Runner: ecs-runner-ip-172-31-19-50.ec2.internal
+
+The deployment completed successfully with no errors!
 ```
 
 **🔄 Workflow Enhancement:**
