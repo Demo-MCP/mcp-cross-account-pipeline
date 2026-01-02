@@ -13,8 +13,8 @@ graph LR
 
     subgraph GitHubActions [GitHub Actions Workflow]
         PullRequestComments
-        /Analyze[Admin Tools]
-        /Ask[User Tools]
+	Analyze[Admin Tools /Analyze]
+        Ask[User Tools /Ask]
         
     end
 
