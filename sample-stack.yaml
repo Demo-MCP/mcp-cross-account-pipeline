@@ -9,7 +9,6 @@ Parameters:
     Description: Environment name
 
 Resources:
-  # Simple S3 bucket with minimal cost
   DemoBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -25,7 +24,6 @@ Resources:
             Status: Enabled
             ExpirationInDays: 1
 
-  # Simple parameter for testing
   DemoParameter:
     Type: AWS::SSM::Parameter
     Properties:
