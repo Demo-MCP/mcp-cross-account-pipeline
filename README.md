@@ -2,6 +2,97 @@
 
 End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MCP) servers with cross-account support, Nova Pro AI integration, enhanced Strands implementation, and comprehensive AWS SigV4 authentication.
 
+## 🎥 Quick Demo
+
+> **Note**: Upload `Images/kiro-mcp-demo.mov` to GitHub and replace the URL below
+
+https://github.com/user-attachments/assets/your-video-id
+
+*Watch the complete workflow: from GitHub PR comments to local Kiro CLI integration*
+
+## 📚 Complete Implementation Guide
+
+**Building a Secure AI-Powered AWS Infrastructure Assistant** - 5-Part Series:
+
+| Part | Topic | Link |
+|------|-------|------|
+| **Part 1** | The Enterprise AI Adoption Challenge | [Read on LinkedIn](https://www.linkedin.com/pulse/building-secure-ai-powered-aws-infrastructure-part-1-suhaib-chishti-agl0c) |
+| **Part 2** | Implementing Tiered Access Control with Strands and MCP | [Read on LinkedIn](https://www.linkedin.com/pulse/building-secure-ai-powered-aws-infrastructure-part-2-suhaib-chishti-dlxqc) |
+| **Part 3** | From GitHub Comments to Production: Deployment Orchestration | [Read on LinkedIn](https://www.linkedin.com/pulse/building-secure-ai-powered-aws-infrastructure-part-3-suhaib-chishti-abfpc) |
+| **Part 4** | Local Development with Kiro CLI Integration | [Read on LinkedIn](https://www.linkedin.com/pulse/building-secure-ai-powered-aws-infrastructure-part-4-suhaib-chishti-f9unc) |
+| **Part 5** | Lessons Learned: Scaling AI Infrastructure Tools | [Read on LinkedIn](https://www.linkedin.com/pulse/building-secure-ai-powered-aws-infrastructure-part-5-suhaib-chishti-qla6c) |
+
+**What You'll Learn:**
+- 🔒 Enterprise-grade security patterns for AI agents
+- 🏗️ AWS Strands framework with enhanced observability  
+- 🔄 GitHub Actions + AI agent integration
+- 🖥️ Local development with Kiro CLI and MCP
+- 📊 Real-world performance insights and lessons learned
+
+## ⚡ Quick Start
+
+### Option 1: Kiro CLI Integration (Recommended)
+```bash
+# 1. Clone the repository
+git clone https://github.com/your-org/mcp-cross-account-pipeline.git
+cd mcp-cross-account-pipeline
+
+# 2. Set up Kiro CLI integration
+./scripts/setup-kiro-mcp.sh
+
+# 3. Start using AI-powered infrastructure tools
+kiro-cli chat
+> deploy to dev
+> deploy_status Demo-MCP/mcp-cross-account-pipeline
+> deploy_get_run <run_id>
+```
+
+### Option 2: GitHub Actions Integration
+```bash
+# 1. Comment on any PR:
+/deploy to staging
+
+# 2. Check deployment status:
+/ask What's the status of my deployment?
+
+# 3. Analyze PR changes (admin only):
+/analyze
+```
+
+### Option 3: Direct API Integration
+```bash
+# Test the API directly
+curl -X POST "https://your-api-gateway.amazonaws.com/prod/ask" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..." \
+  -d '{"query": "List ECS clusters", "metadata": {"account_id": "123456789012"}}'
+```
+
+## 🚀 Key Features
+
+### 🔒 Enterprise Security
+- **AWS SigV4 Authentication**: Cryptographic request signing
+- **Tiered Access Control**: User (`/ask`) vs Admin (`/admin`) endpoints
+- **Cross-Account Support**: Secure STS role assumption
+- **GitHub Runner Segregation**: Role-based workflow isolation
+
+### 🤖 AI-Powered Operations
+- **AWS Strands Integration**: Enterprise-grade AI agent framework
+- **Orchestrated Tool Pattern**: Handle large CloudFormation templates without LLM timeouts
+- **Intelligent Parameter Resolution**: Context-aware command interpretation
+- **Real-Time Status Updates**: Automatic deployment monitoring
+
+### 🔄 Multi-Platform Integration
+- **GitHub Actions**: PR comment-triggered workflows
+- **Kiro CLI**: Local development with MCP protocol
+- **IDE Compatible**: Works with VS Code, Cursor, and any MCP-enabled editor
+- **API Gateway**: Direct REST API access with authentication
+
+### 📊 Production Ready
+- **OpenTelemetry Observability**: Full request tracing and metrics
+- **Container Orchestration**: ECS Fargate with auto-scaling
+- **Deployment Metrics**: Real-time GitHub Actions tracking
+- **Cost Analysis**: AWS Pricing Calculator integration
+
 ## 🏗️ Architecture
 
 ```mermaid
