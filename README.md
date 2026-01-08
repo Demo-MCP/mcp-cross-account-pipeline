@@ -480,6 +480,8 @@ Expected results:
 
 ## 🔐 Security & Access Control
 
+![Tiered Access Demo](Images/Tiered-Access-Demo.gif)
+
 ### Authentication Flow
 ```
 GitHub Actions → Assume Role → SigV4 Sign → API Gateway → Broker → MCP Servers
