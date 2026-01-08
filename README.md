@@ -60,7 +60,7 @@ kiro-cli chat
 /ask What's the status of my deployment?
 
 # 3. Analyze PR changes (admin only):
-/analyze
+/analyze can you summarize pr for me
 ```
 
 ### Option 3: Direct API Integration
