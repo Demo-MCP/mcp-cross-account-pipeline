@@ -6,7 +6,7 @@ End-to-end AWS infrastructure analysis pipeline using Model Context Protocol (MC
 
 ![Kiro CLI Demo](Images/kiro-mcp-demo.gif)
 
-[![Watch Full Demo Video](https://img.shields.io/badge/▶️_Watch_Full_Video-Complete_Workflow-blue?style=for-the-badge)](https://github.com/Demo-MCP/mcp-cross-account-pipeline/blob/strands-implementation/Images/kiro-mcp-demo.mov)
+[![Watch Full Demo Video](https://img.shields.io/badge/▶️_Watch_Full_Video-Complete_Workflow-blue?style=for-the-badge)](https://www.linkedin.com/pulse/building-secure-ai-powered-aws-infrastructure-part-5-suhaib-chishti-qla6c/)
 
 **Demo highlights:**
 - 🚀 Deploy to dev environment with single command
